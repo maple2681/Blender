@@ -1,20 +1,27 @@
 """
-3 AM Harbor - soundtrack from REAL field recordings (no synthesis).
+Soundtracks from REAL field recordings (no synthesis) for the two shots.
 
-Three stems, 48 kHz / 24-bit stereo, 20 s each (the shot is 10 s; the extra is handles):
-  01_shore_waves.wav       small night waves washing the stones at the shore end of the pier
-  02_pier_wood_creaks.wav  moored boat + rope/timber creaks and water slapping under the boards
-  03_night_crickets.wav    two crickets in the grass behind the camera (one near-left, one far-right)
+  --shot 5am  (default)  5 AM Pre-dawn - 15 s shot, stems are 20 s (the extra is handles)
+      01_open_sea_waves.wav   swell rolling in under the fog, wide and a little distant
+      02_sea_breeze.wav       the light onshore breeze that moves the fog
+
+  --shot 3am             3 AM Harbor - 10 s shot, stems are 20 s
+      01_shore_waves.wav       small night waves washing the stones at the shore end of the pier
+      02_pier_wood_creaks.wav  moored boat + rope/timber creaks and water slapping under the boards
+      03_night_crickets.wav    two crickets in the grass behind the camera (one near-left, one far-right)
+
+All stems 48 kHz / 24-bit stereo, plus a *_soundtrack_mix.wav.
 
 Sources (see audio/sources/CREDITS.txt):
   Luftrum      "oceanwavescrushing.wav"               freesound #48412    CC BY 4.0  (credit required)
+  felix.blume  wind                                   freesound #217506   CC0
   Falcet       "Ambience_Sea_Boat_Night_Ropes_4.wav"  freesound #439365   CC0
   Lisa Redfern "Crickets Chirping At Night"           soundbible #2083    Public Domain
   (as edited for the Blanket app, github.com/rafaelmardojai/blanket, data/resources/sounds)
 
 Processing is deliberately light: clean-up only (hum/engine notches, high-pass), distance EQ,
 placement in the stereo field and level. Needs numpy, scipy and ffmpeg on PATH.
-Usage:  python3 make_soundtrack.py  [sources_dir]  [out_dir]
+Usage:  python3 make_soundtrack.py  [--shot 5am|3am]  [sources_dir]  [out_dir]
 """
 import os, sys, json, subprocess
 import numpy as np
@@ -24,10 +31,16 @@ from scipy.signal import butter, sosfiltfilt, iirnotch, filtfilt
 SR = 48000
 DUR = 20.0
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "audio", "sources")
-OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(HERE, "audio")
+ARGS = [a for a in sys.argv[1:]]
+SHOT = "5am"
+if "--shot" in ARGS:
+    i = ARGS.index("--shot")
+    SHOT = ARGS[i + 1].lower()
+    del ARGS[i:i + 2]
+SRC = ARGS[0] if len(ARGS) > 0 else os.path.join(HERE, "audio", "sources")
+OUT = ARGS[1] if len(ARGS) > 1 else os.path.join(HERE, "audio")
 
-FILES = dict(waves="waves.ogg", boat="boat.ogg", crickets="summer-night.ogg")
+FILES = dict(waves="waves.ogg", boat="boat.ogg", crickets="summer-night.ogg", wind="wind.ogg")
 
 
 def load(name):
@@ -41,6 +54,13 @@ def load(name):
 def seg(x, t0, dur=DUR):
     a = int(t0 * SR)
     return x[a:a + int(dur * SR)].copy()
+
+
+def loop_to(x, dur=DUR):
+    """Tile a seamless loop (all Blanket sounds are edited to loop) out to 'dur' seconds."""
+    n = int(dur * SR)
+    reps = int(np.ceil(n / len(x)))
+    return np.concatenate([x] * reps, axis=0)[:n].copy()
 
 
 def hp(x, fc, order=4):
@@ -60,6 +80,13 @@ def pan_mono(m, pan):
     """Constant-power pan, pan in [-1 (left), +1 (right)]."""
     th = (pan + 1.0) * np.pi / 4.0
     return np.stack([m * np.cos(th), m * np.sin(th)], axis=1)
+
+
+def width(x, w):
+    """Mid/side stereo width: 0 = mono, 1 = as recorded, >1 = wider."""
+    mid = 0.5 * (x[:, 0] + x[:, 1])
+    side = 0.5 * (x[:, 0] - x[:, 1]) * w
+    return np.stack([mid + side, mid - side], axis=1)
 
 
 def fades(x, fin=0.03, fout=1.0):
@@ -94,15 +121,18 @@ def write24(name, x):
     os.remove(tmp)
 
 
-def main():
-    os.makedirs(OUT, exist_ok=True)
-
-    # 01 - shore waves (stereo). Calm stretch 40-60 s. The recording has a distant ship's engine
-    # droning at 68/90/114/138/268 Hz underneath - high-pass + narrow notches take it out.
-    w = seg(load("waves"), 40.0)
+def clean_waves(w):
+    # The Luftrum recording has a distant ship's engine droning at 68/90/114/138/268 Hz
+    # underneath - high-pass + narrow notches take it out.
     w = hp(w, 110.0)
     for f0 in (90.0, 114.0, 138.0, 268.0):
         w = notch(w, f0)
+    return w
+
+
+def stems_3am():
+    # 01 - shore waves (stereo). Calm stretch 40-60 s.
+    w = clean_waves(seg(load("waves"), 40.0))
     w = lp(w, 11000.0)
     w = to_lufs(fades(w), -27.0)
 
@@ -123,8 +153,31 @@ def main():
     far = lp(seg(c[:, None], 24.5)[:, 0], 5500.0) * 10 ** (-8.0 / 20)
     cr = pan_mono(near, -0.45) + pan_mono(far, 0.6)
     cr = to_lufs(fades(cr, fin=0.03, fout=1.0), -35.0)
+    return {"01_shore_waves.wav": w, "02_pier_wood_creaks.wav": b, "03_night_crickets.wav": cr}, "3AM_Harbor"
 
-    stems = {"01_shore_waves.wav": w, "02_pier_wood_creaks.wav": b, "03_night_crickets.wav": cr}
+
+def stems_5am():
+    # 01 - open sea. The steadiest stretch of the recording (84-104 s): swell after swell, no
+    # single big crash. The camera is out over the water, so the surf is pushed back a little:
+    # softer top end (air absorption) and a wider, more enveloping image.
+    w = clean_waves(seg(load("waves"), 84.0))
+    w = lp(w, 7500.0)
+    w = width(w, 1.35)
+    w = to_lufs(fades(w, fin=0.5, fout=1.5), -26.0)
+
+    # 02 - sea breeze. The loop is 14.8 s, tiled seamlessly to 20 s. Low rumble (mic buffeting)
+    # removed so it reads as air moving, not wind on a microphone; it sits under the waves.
+    b = loop_to(load("wind"))
+    b = hp(b, 160.0)
+    b = lp(b, 6000.0)
+    b = width(b, 1.2)
+    b = to_lufs(fades(b, fin=0.5, fout=1.5), -34.0)
+    return {"01_open_sea_waves.wav": w, "02_sea_breeze.wav": b}, "5AM_Predawn"
+
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
+    stems, title = stems_5am() if SHOT == "5am" else stems_3am()
     mix = sum(stems.values())
     peak = np.abs(mix).max()
     if peak > 0.708:                      # keep ~-3 dBFS sample-peak headroom for the AAC encoder
@@ -133,7 +186,7 @@ def main():
         mix = mix * g
     for k, v in stems.items():
         write24(k, v)
-    write24("3AM_Harbor_soundtrack_mix.wav", mix)
+    write24("%s_soundtrack_mix.wav" % title, mix)
     report = {k: lufs(v) for k, v in stems.items()}
     report["mix"] = lufs(mix)
     for k, (i, tp) in report.items():

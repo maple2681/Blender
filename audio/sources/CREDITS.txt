@@ -1,0 +1,15 @@
+Source recordings used by make_soundtrack.py (as edited for the Blanket app,
+https://github.com/rafaelmardojai/blanket - data/resources/sounds)
+
+waves.ogg   Luftrum - "oceanwavescrushing.wav"
+            https://freesound.org/people/Luftrum/sounds/48412/
+            License: CC BY 4.0 - CREDIT REQUIRED in the film's credits / description, e.g.
+            "Ocean waves: Luftrum (freesound.org), CC BY 4.0"
+
+wind.ogg    felix.blume - wind
+            https://freesound.org/people/felix.blume/sounds/217506/
+            License: CC0 (no attribution required)
+
+The 3 AM Harbor soundtrack (make_soundtrack.py --shot 3am) additionally uses boat.ogg
+(Falcet, freesound #439365, CC0) and summer-night.ogg (Lisa Redfern, soundbible #2083,
+public domain); those two files are not included here.

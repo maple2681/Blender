@@ -1,0 +1,7 @@
+# render output (frames / video) - large, regenerated on the render PC
+renders/
+# Blender backups
+*.blend1
+*.blend2
+__pycache__/
+textures/*_preview.png
