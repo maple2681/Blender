@@ -11,7 +11,7 @@ above the water. Behind him, eroded mountain ranges fade into the distance.
 | Duration | 15 s: 900 frames at **60 fps** |
 | Resolution | **2048 × 858**: DCI 2K, 2.39:1 scope (change `res_x` / `res_y` for 16:9) |
 | Engine | Cycles, AgX view transform, OpenImageDenoise |
-| Camera | 32 mm, f/2.8, 0.9 m above the water beside the fish house: a slow 4 m glide past the pier; focus follows the boat |
+| Camera | 24 mm wide, 2.2 m above the water off the pier's seaward side: the whole fish house, deck, lamps, boat and mountains in frame, with a slow 3 m glide; focus follows the boat |
 
 ![Frame 1 preview](preview/5AM_Predawn_preview.jpg)
 

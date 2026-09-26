@@ -99,9 +99,9 @@ P = dict(
     gulls=True, lighthouse=True, kelp=True,
     lighthouse_azimuth=-12.0, beam_period=10.0, beam_strength=0.15, lighthouse_flash=2500.0,
     # camera: 15 s glide over the water toward the mountains
-    cam_start=(3.6, 4.0, 0.9), cam_travel=4.0, cam_rise=0.2,
-    cam_yaw=(-8.0, -4.0), cam_pitch=1.5,   # degrees (yaw + = right), pitch + = up
-    lens=32.0, sensor=36.0, fstop=2.8, focus_dist=16.0,           # focus follows the boat when there is one
+    cam_start=(8.0, -4.0, 2.2), cam_travel=3.0, cam_rise=0.2,
+    cam_yaw=(-16.0, -12.0), cam_pitch=0.5, # degrees (yaw + = right), pitch + = up
+    lens=24.0, sensor=36.0, fstop=4.0, focus_dist=16.0,           # focus follows the boat when there is one
     cam_drift=True,                        # very slow gimbal-soft float
     motion_blur=False,                     # sub-pixel at 60 fps for this slow move; costs render time
     # geometry detail
