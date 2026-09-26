@@ -59,7 +59,7 @@ P = dict(
     audio_dir="",                          # "" = the 'audio' folder next to the .blend / this script
     terrain_dir="",                        # "" = the 'textures' folder next to the .blend / this script
     # colour management
-    exposure=1.5,                          # stops, AgX view transform (nautical twilight: moody, a little dark)
+    exposure=1.8,                          # stops, AgX view transform (nautical twilight: moody, a little dark)
     look="AgX - Medium High Contrast",
     # sky: civil twilight. Azimuths are compass degrees, 0 = +Y (straight ahead), 90 = +X (right)
     sun_elevation=-8.5,                    # below the horizon -> no sun, no direct light, no shadows
@@ -85,10 +85,13 @@ P = dict(
     bank_density=0.0035, bank_height=32.0, # fog bank at the foot of the mountains
     haze_density=0.00007, haze_height=800.0,
     haze_gain=0.92,                        # haze/fog-bank brightness relative to the horizon sky behind it
-    # the old jetty, the rowing boat and its fisherman
-    jetty=True, jetty_from=(-2.9, 7.5), jetty_to=(-1.2, 78.0),
+    # the old pier with the red fish house (3 AM builder's code), placed in pier space -> world
+    pier=True, pier_offset=(-1.5, 2.6), pier_rotation=-5.0,        # m, deg (negative = runs toward frame centre)
+    pier_lamps=(5.0, 11.5, 18.0), pier_dead_lamp=2, pier_lamp_power=14.0,   # pier-space y of the lamp posts
+    # the ruined jetty beyond the pier's collapsed end, the rowing boat and its fisherman
+    jetty=True, jetty_from=(2.2, 30.0), jetty_to=(6.8, 84.0),
     boat=True, rower=True, lantern=True,
-    boat_start=(1.3, 16.0), boat_heading=6.0, boat_speed=0.85,   # m, compass deg, m/s (rowing away)
+    boat_start=(6.2, 17.0), boat_heading=8.0, boat_speed=0.85,   # m, compass deg, m/s (rowing away)
     stroke_period=2.7, stroke_phase0=0.62,                         # s per stroke (~22 strokes/min)
     glance=(7.0, 9.4),                                             # s: he looks over his shoulder
     lantern_power=6.0, lantern_halo=1.3, lantern_halo_density=0.018,
@@ -96,9 +99,9 @@ P = dict(
     gulls=True, lighthouse=True, kelp=True,
     lighthouse_azimuth=-12.0, beam_period=10.0, beam_strength=0.15, lighthouse_flash=2500.0,
     # camera: 15 s glide over the water toward the mountains
-    cam_start=(0.0, 0.0, 2.0), cam_travel=5.5, cam_rise=0.25,
-    cam_yaw=(1.0, 2.6), cam_pitch=-0.4,    # degrees (yaw + = right), pitch + = up
-    lens=50.0, sensor=36.0, fstop=4.0, focus_dist=16.0,           # focus follows the boat when there is one
+    cam_start=(0.0, 0.0, 2.5), cam_travel=5.5, cam_rise=0.25,
+    cam_yaw=(5.0, 7.5), cam_pitch=-2.5,    # degrees (yaw + = right), pitch + = up
+    lens=40.0, sensor=36.0, fstop=4.0, focus_dist=16.0,           # focus follows the boat when there is one
     cam_drift=True,                        # very slow gimbal-soft float
     motion_blur=False,                     # sub-pixel at 60 fps for this slow move; costs render time
     # geometry detail
@@ -143,7 +146,7 @@ def heading_vec(deg):
 def prepare_scene():
     """Remove everything a previous run created, then (re)use scene '5AM_Predawn'."""
     global SC
-    pre = ("H5_", "H5R_")                       # H5R_ = the rower appended from assets/5AM_rower.blend
+    pre = ("H5_", "H5R_", "H5H_")               # H5R_ = the rower, H5H_ = the pier built by the 3 AM code
     for ob in list(bpy.data.objects):
         if ob.name.startswith(pre):
             bpy.data.objects.remove(ob, do_unlink=True)
@@ -2089,6 +2092,144 @@ def float_on_ocean(ob):
 
 
 # ============================================================================
+#  THE OLD PIER AND THE RED FISH HOUSE  (reused from the 3 AM harbour builder)
+# ============================================================================
+def harbour_script_path():
+    cands = []
+    if bpy.data.filepath:
+        cands.append(os.path.join(os.path.dirname(bpy.data.filepath), "build_3am_harbor.py"))
+    here = globals().get("__file__", "")
+    if here and os.path.isabs(here):
+        cands.append(os.path.join(os.path.dirname(here), "build_3am_harbor.py"))
+    for p_ in cands:
+        if os.path.isfile(p_):
+            return p_
+    return None
+
+
+def harbour_to_world(local):
+    """3 AM pier space (x across, +y out to sea, deck at z 0.8) -> this shot's world space."""
+    (tx, ty), rot = P["pier_offset"], radians(P["pier_rotation"])
+    x, y = local[0], local[1]
+    return Vector((tx + x * cos(rot) - y * sin(rot), ty + x * sin(rot) + y * cos(rot),
+                   local[2] if len(local) > 2 else 0.0))
+
+
+def build_harbour():
+    """The rotting plank pier with moss in the cracks, its support piles and fender posts, the abandoned
+    red clapboard fish house with peeling paint, barrel chimney, mast and wires, crates, barrel, rope and
+    buoy - built by the 3 AM builder's own code, renamed H5H_ and set down on the left of this shot."""
+    if not P["pier"]:
+        return
+    path = harbour_script_path()
+    if not path:
+        log("pier: build_3am_harbor.py not found next to the script - skipped")
+        return
+    src = open(path).read().replace('if __name__ == "__main__":\n    build_all()', '')
+    ns = {"__name__": "harbour3am", "__file__": path}
+    exec(compile(src, path, "exec"), ns)
+    ns["SC"] = SC
+    kinds = (bpy.data.objects, bpy.data.meshes, bpy.data.curves, bpy.data.materials, bpy.data.node_groups,
+             bpy.data.particles, bpy.data.collections, bpy.data.textures)
+    before = {id(k): set(k.keys()) for k in kinds}
+    M = ns["MATS"]
+    M["deck"] = ns["mat_deck"]()
+    M["wood_trim"] = ns["mat_wood"]("M_Wood_Trim", 0.95, 1.0, 0.25, 0.35, 0.6)
+    M["wood_dark"] = ns["mat_wood"]("M_Wood_Structure", 0.6, 0.45, 0.35, 0.6, 0.5)
+    M["wood_mast"] = ns["mat_wood"]("M_Wood_Mast", 0.9, 0.8, 0.2, 0.3, 0.7, axis='Z')
+    for k, fn in (("moss_bed", "mat_moss_bed"), ("moss_hair", "mat_moss_hair"), ("algae_hair", "mat_algae_hair"),
+                  ("leaf", "mat_leaf"), ("piling", "mat_piling"), ("paint", "mat_paint"), ("roof", "mat_roof"),
+                  ("glass", "mat_glass_grimy"), ("rust", "mat_rust"), ("rope", "mat_rope"), ("buoy", "mat_buoy")):
+        M[k] = ns[fn]()
+    M["dark"] = ns["mat_simple"]("M_Interior_Dark", (0.012, 0.010, 0.008), 0.9)
+    # the ruins past the collapsed end and the mooring dolphin are this shot's own jetty instead
+    specs = ns["piling_specs"]
+    ns["piling_specs"] = lambda: [s for s in specs() if s[0] in ("Pile_Support", "Pile_Fender", "Pile_Walk")]
+    for step in ("build_deck", "build_moss", "build_sprouts", "build_pilings", "build_house", "build_props"):
+        try:
+            ns[step]()
+        except Exception as e:
+            import traceback
+            log("pier", step, "FAILED", e, traceback.format_exc()[-600:])
+    rope = bpy.data.objects.get("H3_Dolphin_Rope")
+    if rope is not None:
+        bpy.data.objects.remove(rope, do_unlink=True)
+    # rename everything it made (so re-running this builder never touches a real 3 AM scene)
+    for k in kinds:
+        for nm in set(k.keys()) - before[id(k)]:
+            d = k.get(nm)
+            if d is not None and d.name.startswith("H3_"):
+                d.name = "H5H_" + d.name[3:]
+    c = coll("20_Pier")
+    root = new_empty("PierRoot", c, (P["pier_offset"][0], P["pier_offset"][1], 0.0), 1.0, 'ARROWS')
+    root.rotation_euler = (0.0, 0.0, radians(P["pier_rotation"]))
+    for ob in SC.objects:
+        if ob.name.startswith("H5H_") and ob.parent is None:
+            ob.parent = root
+    for cl in list(SC.collection.children):
+        if cl.name.startswith("H5H_"):
+            SC.collection.children.unlink(cl)
+            c.children.link(cl)
+    OBJS["pier_root"] = root
+    build_pier_lamps(c, root, M)
+
+
+def build_pier_lamps(c, root, M):
+    """Old pier lights (third reference): tarred poles, enamel shades, warm bulbs still burning at dawn,
+    one of them dead, a sagging cable between them."""
+    DZ = 0.8
+    rng = random.Random(P["seed"] + 13)
+    ys = P["pier_lamps"]
+    bmp = bmesh.new()
+    tops = []
+    for i, y in enumerate(ys):
+        x = 1.92
+        h = 3.1 + rng.uniform(-0.1, 0.1)
+        lean = rng.gauss(0, 0.03)
+        base = Vector((x, y, DZ - 0.3))
+        top = base + Vector((lean, 0.0, h))
+        bm_tube(bmp, [base, base.lerp(top, 0.5) + Vector((0.01, 0, 0)), top], 0.06, seg=10, r_end=0.045)
+        arm_end = top + Vector((-0.45, 0.0, -0.05))
+        bm_tube(bmp, [top - Vector((0, 0, 0.12)), top + Vector((-0.25, 0, 0.02)), arm_end], 0.018, seg=6)
+        tops.append((top, arm_end, i))
+    bm_to_obj("Pier_LampPoles", bmp, c, M["wood_dark"], smooth=True, parent=root)
+    shades = bmesh.new()
+    bulbs = bmesh.new()
+    for top, arm, i in tops:
+        bm_lathe(shades, [(0.015, 0.0), (0.05, -0.03), (0.13, -0.10), (0.135, -0.11)],
+                 loc=arm + Vector((0, 0, -0.02)), seg=24)
+        bm_sphere(bulbs, arm + Vector((0, 0, -0.1)), 0.035, useg=12, vseg=8)
+    sh = bm_to_obj("Pier_LampShades", shades, c, MATS["lamp_paint"], smooth=True, parent=root)
+    so = sh.modifiers.new("Solidify", 'SOLIDIFY')
+    so.thickness = 0.004
+    bmat, gg, out = new_mat("M_PierBulb")
+    em = gg.new('ShaderNodeEmission', 0, 0)
+    bb = gg.new('ShaderNodeBlackbody', -200, 0)
+    bb.inputs["Temperature"].default_value = 2400.0
+    gg.link(bb.outputs[0], em.inputs["Color"])
+    em.inputs["Strength"].default_value = 60.0
+    finish(bmat, gg, out, em.outputs[0])
+    bu = bm_to_obj("Pier_Bulbs", bulbs, c, bmat, smooth=True, parent=root)
+    bu.visible_shadow = False
+    for top, arm, i in tops:
+        if i == P["pier_dead_lamp"]:
+            continue
+        ld = bpy.data.lights.new("H5_PierLamp_%d" % i, 'POINT')
+        ld.energy = P["pier_lamp_power"]
+        ld.shadow_soft_size = 0.04
+        if not (setp(ld, "use_temperature", True) and setp(ld, "temperature", 2400.0)):
+            ld.color = (1.0, 0.55, 0.25)
+        lo = link_obj("PierLamp_%d" % i, ld, c, root)
+        lo.location = arm + Vector((0, 0, -0.14))
+        if i == 1:                                           # a tired bulb that flickers now and then
+            add_driver(ld, "energy", "%.2f*(1-0.6*(sin(frame*0.9)>0.93)-0.3*(sin(frame*0.37+1)>0.97))"
+                       % P["pier_lamp_power"])
+    for (t0, _, _), (t1, _, _) in zip(tops[:-1], tops[1:]):
+        make_curve("Pier_Cable", sag_wire(t0 - Vector((0, 0, 0.05)), t1 - Vector((0, 0, 0.05)), 0.35, 16), c,
+                   0.006, MATS["rope"], parent=root)
+
+
+# ============================================================================
 #  THE ROWBOAT: a clinker-built wooden double-ender (Norwegian faering style), oars, no motor
 # ============================================================================
 # boat space: +X = bow, +Y = port, Z up, z = 0 is the waterline
@@ -3400,7 +3541,7 @@ def build_all(save_path=None):
     prepare_scene()
     steps = [("render", setup_render), ("materials", build_materials), ("world", setup_world),
              ("camera", build_camera), ("ocean", build_ocean), ("mountains", build_mountains),
-             ("jetty", build_jetty), ("boat", build_boat), ("lighthouse", build_lighthouse),
+             ("pier", build_harbour), ("jetty", build_jetty), ("boat", build_boat), ("lighthouse", build_lighthouse),
              ("gulls", build_gulls), ("flotsam", build_flotsam), ("focus", focus_on_boat),
              ("atmosphere", build_atmosphere), ("compositor", setup_compositor), ("audio", setup_audio),
              ("edit scene", setup_edit_scene), ("viewport", setup_viewport)]

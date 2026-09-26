@@ -1,16 +1,17 @@
 # 5 AM Pre-dawn — cinematic seascape (Blender 5.x + Cycles)
 
 A hyper-realistic pre-dawn shot at 5:00 AM. The sun is 8.5° below the horizon, so there is no sun in the sky:
-the scene is lit by the dim, diffuse glow of the twilight sky and one warm kerosene lantern. An old
-fisherman rows his wooden boat away from the camera, past the rotten posts of a ruined jetty, into sea fog
-rolling just above the water. Behind him, eroded mountain ranges fade into the distance.
+the scene is lit by the dim, diffuse glow of the twilight sky, a few old pier lamps and one warm kerosene
+lantern. The camera glides slowly along a rotting plank pier past an abandoned red fish house. Beside it, an
+old fisherman rows his wooden boat out past the posts of the pier's ruined end, into sea fog rolling just
+above the water. Behind him, eroded mountain ranges fade into the distance.
 
 | | |
 |---|---|
 | Duration | 15 s: 900 frames at **60 fps** |
 | Resolution | **2048 × 858**: DCI 2K, 2.39:1 scope (change `res_x` / `res_y` for 16:9) |
 | Engine | Cycles, AgX view transform, OpenImageDenoise |
-| Camera | 50 mm, 2 m above the water, a slow 5.5 m glide that pans with the boat; focus follows the boat |
+| Camera | 40 mm at standing eye height on the pier, a slow 5.5 m walk along the planks; focus follows the boat |
 
 ![Frame 1 preview](preview/5AM_Predawn_preview.jpg)
 
@@ -65,7 +66,7 @@ To adjust it:
 | `tools/make_rower.py` | Builds that character from MakeHuman's CC0 data (`blender -b --python tools/make_rower.py -- <mpfb2>/src/mpfb/data`). |
 | `make_soundtrack.py` | Builds the soundtrack stems from real field recordings. `--shot 5am` is the default; `--shot 3am` still makes the old harbour soundtrack. |
 | `audio/` | The 5 AM stems (20 s each, so the 15 s shot has handles) and the source recordings. |
-| `build_3am_harbor.py` | The original 3 AM harbour builder, kept for reference. |
+| `build_3am_harbor.py` | The original 3 AM harbour builder. The 5 AM builder reuses its pier and fish house, so keep it next to the script. |
 
 To rebuild after changing settings, open `build_5am_predawn.py` in Blender's Scripting workspace and click **Run
 Script**, or run `blender --python build_5am_predawn.py`. It rebuilds only the `5AM_Predawn` scene, so the rest
@@ -111,7 +112,13 @@ of the file is left alone.
   ribs, gunwales, thwarts and bronze rowlocks. The old paint is peeling to grey wood, with rust weeping
   from the rivets and green weed at the waterline. Aboard are a fish box, a net, a coil of rope, a tin
   bucket, and a hurricane lantern swinging on its crook, with a soft halo in the damp air.
-* **The jetty.** Two rows of rotten posts run out into the fog, modelled on your reference photo: grey
+* **The pier and the fish house.** These are built by your 3 AM builder's own code, which the 5 AM
+  builder runs and renames `H5H_`, so `build_3am_harbor.py` must stay next to the script. The pier is
+  rotting planks with moss and little plants in the cracks, missing and sagging boards, and a collapsed
+  end. The house is red clapboard with peeling paint, broken windows, a hanging door, a barrel chimney,
+  and a mast with wires. Crates, a barrel, rope and a buoy sit on the deck. Three old pier lamps line the
+  walk, as in your third photo: one flickers, one is dead, and a cable sags between them.
+* **The jetty.** Beyond the pier's collapsed end, two rows of rotten posts run out into the fog, modelled on your reference photo: grey
   cracked wood with rust-orange rot on top, moss, then a skirt of bright green weed strands at the tide
   line, barnacle crust and black slime below. Broken stringers, a sagging rope to a bobbing mooring buoy,
   and kelp and driftwood riding the swell complete it.
@@ -132,7 +139,8 @@ The main controls in `P`:
 | `cam_travel` / `cam_yaw` | the camera move |
 | `boat_start`, `boat_heading`, `boat_speed`, `stroke_period` | where he rows and how fast |
 | `lantern_power` | the lantern's brightness |
-| `jetty`, `gulls`, `lighthouse`, `kelp`, `moon` | switch elements on or off |
+| `pier`, `jetty`, `gulls`, `lighthouse`, `kelp`, `moon` | switch elements on or off |
+| `pier_offset`, `pier_rotation`, `pier_lamp_power` | where the pier and house stand, and how bright their lamps are |
 
 ## Credits
 
