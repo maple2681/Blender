@@ -50,8 +50,8 @@ P = dict(
     res_x=2048, res_y=858,
     # "FINAL" = full quality; "PREVIEW" = 50 % size, 48 samples (quick look on a slow machine)
     quality="FINAL",
-    samples=128, adaptive_threshold=0.015, min_samples=32,    # raise samples to 256 if you see flicker
-    volume_step_rate=2.0,                  # ray-march step (x the automatic size); 1 = finest, 4 = draft
+    samples=256, adaptive_threshold=0.01, min_samples=64,     # raise samples to 256 if you see flicker
+    volume_step_rate=1.0,                  # ray-march step (x the automatic size); 1 = finest, 4 = draft
     preview_samples=32,
     # output: "PNG" = frame sequence (safe to stop/resume) -> then render scene "5AM_Edit" for the MP4
     #         "VIDEO" = MP4 (H.264 + AAC) straight away,  "EXR" = multilayer EXR frames for grading
@@ -80,8 +80,8 @@ P = dict(
     fog_top=1.9, fog_top_var=0.8,          # mean height of the fog's top and its slow swell (m)
     fog_billow=2.6,                        # height of the rolling billows on top of the layer (m)
     fog_speed=1.4,                         # m/s drift
-    fog_fill=1.05,                         # in-scattered light (fog brightness vs the horizon sky behind it)
-    fog_scatter=0.0,                       # > 0 adds path-traced single scattering on top (slow, noisy)
+    fog_fill=0.6,                          # in-scattered light (fog brightness vs the horizon sky behind it)
+    fog_scatter=0.85,                      # path-traced scattering: lamps and lantern throw real light into the fog
     bank_density=0.0035, bank_height=32.0, # fog bank at the foot of the mountains
     haze_density=0.00007, haze_height=800.0,
     haze_gain=0.92,                        # haze/fog-bank brightness relative to the horizon sky behind it
@@ -99,9 +99,9 @@ P = dict(
     gulls=True, lighthouse=True, kelp=True,
     lighthouse_azimuth=-12.0, beam_period=10.0, beam_strength=0.15, lighthouse_flash=2500.0,
     # camera: 15 s glide over the water toward the mountains
-    cam_start=(0.0, 0.0, 2.5), cam_travel=5.5, cam_rise=0.25,
-    cam_yaw=(5.0, 7.5), cam_pitch=-2.5,    # degrees (yaw + = right), pitch + = up
-    lens=40.0, sensor=36.0, fstop=4.0, focus_dist=16.0,           # focus follows the boat when there is one
+    cam_start=(3.6, 4.0, 0.9), cam_travel=4.0, cam_rise=0.2,
+    cam_yaw=(-8.0, -4.0), cam_pitch=1.5,   # degrees (yaw + = right), pitch + = up
+    lens=32.0, sensor=36.0, fstop=2.8, focus_dist=16.0,           # focus follows the boat when there is one
     cam_drift=True,                        # very slow gimbal-soft float
     motion_blur=False,                     # sub-pixel at 60 fps for this slow move; costs render time
     # geometry detail
@@ -3192,10 +3192,10 @@ def setup_render():
     cy.use_preview_denoising = True
     # light paths: no lamps at all - sky light and volume scattering
     cy.max_bounces = 12
-    cy.diffuse_bounces = 3
+    cy.diffuse_bounces = 4
     cy.glossy_bounces = 4
     cy.transmission_bounces = 4
-    cy.volume_bounces = 2
+    cy.volume_bounces = 3
     cy.transparent_max_bounces = 8
     cy.sample_clamp_direct = 0.0
     cy.sample_clamp_indirect = 4.0

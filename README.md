@@ -11,7 +11,7 @@ above the water. Behind him, eroded mountain ranges fade into the distance.
 | Duration | 15 s: 900 frames at **60 fps** |
 | Resolution | **2048 × 858**: DCI 2K, 2.39:1 scope (change `res_x` / `res_y` for 16:9) |
 | Engine | Cycles, AgX view transform, OpenImageDenoise |
-| Camera | 40 mm at standing eye height on the pier, a slow 5.5 m walk along the planks; focus follows the boat |
+| Camera | 32 mm, f/2.8, 0.9 m above the water beside the fish house: a slow 4 m glide past the pier; focus follows the boat |
 
 ![Frame 1 preview](preview/5AM_Predawn_preview.jpg)
 
@@ -36,19 +36,20 @@ Keep the `audio` folder next to the `.blend`: the edit scene takes its sound fro
 
 ### Render time
 
-The frame is mostly smooth sky, fog and water. The fog and haze are ray-marched absorption + emission
-volumes, so they add no noise, and 128 samples with adaptive sampling and OpenImageDenoise come out clean.
+Quality is set high:
+
+* The sea fog is path-traced, so the pier lamps and the lantern throw real light into it.
+* Volumes are ray-marched at the finest step (`volume_step_rate=1`).
+* 256 adaptive samples with OpenImageDenoise, 3 volume bounces and 4 diffuse bounces.
 
 The only speed I could measure was on the 4-core cloud CPU used for the preview: a full-resolution frame at
 64 samples took about 12½ minutes. A recent NVIDIA RTX GPU is usually 20–60× faster than that in Cycles.
-Expect roughly **½–2 minutes per frame** at the default 128 samples, which is about 8–30 hours for all 900
-frames, depending on the card.
+At these settings, expect roughly **2–5 minutes per frame**. That is a long render, but it is resumable.
 
 To adjust it:
 
-* If you see flicker in the fog or sky when you play the frames back, raise **Max Samples** to 256 in
-  **Render Properties → Sampling**.
-* For a faster draft, lower it to 64.
+* For a faster render, set **Max Samples** to 128 and `volume_step_rate` to 2. It looks almost the same.
+* Setting `fog_scatter=0` goes back to the cheap fog, with no light from the lamps inside it.
 * For a quick look first, set `quality="PREVIEW"` in the script and rebuild. That renders at 50 % size with
   48 samples.
 * `volume_step_rate` sets the ray-march step: 1 is the finest, 4 is a draft. The default of 2 is visually
