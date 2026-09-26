@@ -1,19 +1,20 @@
 # 5 AM Pre-dawn — cinematic seascape (Blender 5.x + Cycles)
 
-A hyper-realistic pre-dawn shot at 5:00 AM. The sun is 6° below the horizon, so there is no sun in the sky
-and no direct light: everything is lit by the soft, diffuse glow of the twilight sky. Eroded mountain
-ranges fade into the distance behind a calm ocean, with thick fog rolling just above the water.
+A hyper-realistic pre-dawn shot at 5:00 AM. The sun is 8.5° below the horizon, so there is no sun in the sky:
+the scene is lit by the dim, diffuse glow of the twilight sky and one warm kerosene lantern. An old
+fisherman rows his wooden boat away from the camera, past the rotten posts of a ruined jetty, into sea fog
+rolling just above the water. Behind him, eroded mountain ranges fade into the distance.
 
 | | |
 |---|---|
 | Duration | 15 s: 900 frames at **60 fps** |
 | Resolution | **2048 × 858**: DCI 2K, 2.39:1 scope (change `res_x` / `res_y` for 16:9) |
 | Engine | Cycles, AgX view transform, OpenImageDenoise |
-| Camera | 40 mm, a slow 11 m glide low over the water toward the mountains, eased in and out, with a very soft gimbal float |
+| Camera | 50 mm, 2 m above the water, a slow 5.5 m glide that pans with the boat; focus follows the boat |
 
 ![Frame 1 preview](preview/5AM_Predawn_preview.jpg)
 
-*Frame 1: a 64-sample CPU preview, rendered in a cloud sandbox only to check the look. The real render is
+*Frame 1: a 32-sample CPU preview, rendered in a cloud sandbox only to check the look. The real render is
 yours to do on the PC.*
 
 Built and tested with Blender 5.0. The file opens in 5.2 LTS.
@@ -60,6 +61,8 @@ To adjust it:
 | `build_5am_predawn.py` | Builds the whole scene from scratch. All the controls are in the `P = dict(...)` block at the top. |
 | `textures/5AM_terrain_*.png` | 16-bit heightmaps of the three ranges, plus `5AM_terrain.json` (their extents and heights). |
 | `tools/make_terrain.py` | Grows those heightmaps with an erosion simulation. Needs numpy, scipy, numba and pillow; not Blender. |
+| `assets/5AM_rower.blend` | The fisherman: rigged, dressed and groomed. The builder appends him into the boat. |
+| `tools/make_rower.py` | Builds that character from MakeHuman's CC0 data (`blender -b --python tools/make_rower.py -- <mpfb2>/src/mpfb/data`). |
 | `make_soundtrack.py` | Builds the soundtrack stems from real field recordings. `--shot 5am` is the default; `--shot 3am` still makes the old harbour soundtrack. |
 | `audio/` | The 5 AM stems (20 s each, so the 15 s shot has handles) and the source recordings. |
 | `build_3am_harbor.py` | The original 3 AM harbour builder, kept for reference. |
@@ -70,7 +73,7 @@ of the file is left alone.
 
 ## What is in the shot, and why it looks the way it does
 
-* **Light.** A physically based *multiple-scattering* sky (Blender 5's twilight model) with the sun 6° below
+* **Light.** A physically based *multiple-scattering* sky (Blender 5's twilight model) with the sun 8.5° below
   the horizon, ahead and to the right, so the sky on that side is slightly brighter. A thin waning crescent
   moon hangs low in the east, as it does before sunrise; its lit edge faces the hidden sun. Set
   `moon=False` to remove it.
@@ -89,6 +92,31 @@ of the file is left alone.
 
   Shader ripples come and go in breeze patches with glassy slicks between them. The waves ease out with
   distance so the horizon never shimmers.
+* **The rower.** A detailed human built from MakeHuman's CC0 base mesh and shaped into a weathered man in
+  his fifties. He has MakeHuman's full 163-bone skeleton and skin weights, real eyes, a grey-flecked beard,
+  eyebrows, and skin with subsurface scattering and pores. He wears a dark oilskin jacket with a stand-up
+  collar, canvas trousers, rubber sea boots and a knitted wool cap.
+* **The rowing.** There is no motor. He sculls with two oars through a full, realistic stroke cycle every
+  2.7 s:
+  * the catch;
+  * the drive, with the blades buried and square;
+  * the finish, where the blades lift out and feather flat;
+  * the recovery, hands away first and then the body swings forward.
+
+  His hands are held to the oar grips by IK, his feet are braced on the stretcher, and he takes one look
+  over his shoulder to check his course. The boat surges on every stroke and floats on the actual FFT
+  waves: probes shrinkwrapped to the sea surface drive its heave, pitch and roll. Each catch leaves a ring
+  of ripples and each finish leaves a glassy puddle in the water behind him.
+* **The boat.** A clinker-built Norwegian-style double-ender with lapped planks, keel and curled stems,
+  ribs, gunwales, thwarts and bronze rowlocks. The old paint is peeling to grey wood, with rust weeping
+  from the rivets and green weed at the waterline. Aboard are a fish box, a net, a coil of rope, a tin
+  bucket, and a hurricane lantern swinging on its crook, with a soft halo in the damp air.
+* **The jetty.** Two rows of rotten posts run out into the fog, modelled on your reference photo: grey
+  cracked wood with rust-orange rot on top, moss, then a skirt of bright green weed strands at the tide
+  line, barnacle crust and black slime below. Broken stringers, a sagging rope to a bobbing mooring buoy,
+  and kelp and driftwood riding the swell complete it.
+* **Life.** Gulls perch on the posts and fly slowly across the sky, flapping between glides. A lighthouse on
+  the headland turns its beam through the haze, and the lamp flares each time the beam passes the camera.
 * **Fog.** A dense layer 1–5 m deep lies on the water. Its top heaves in slow swells and rolling billows, it
   drifts with the breeze and keeps changing shape. Farther out, a fog bank hides the foot of the mountains.
 
@@ -102,9 +130,14 @@ The main controls in `P`:
 | `haze_density` | how quickly the mountains fade |
 | `wind_speed`, `swell_scale`, `windsea_scale` | how rough the sea is |
 | `cam_travel` / `cam_yaw` | the camera move |
+| `boat_start`, `boat_heading`, `boat_speed`, `stroke_period` | where he rows and how fast |
+| `lantern_power` | the lantern's brightness |
+| `jetty`, `gulls`, `lighthouse`, `kelp`, `moon` | switch elements on or off |
 
 ## Credits
 
 * Waves: Luftrum, "oceanwavescrushing.wav", freesound #48412, **CC BY 4.0. Credit required.**
 * Wind: felix.blume, freesound #217506, CC0.
 * Both as edited for the Blanket app (github.com/rafaelmardojai/blanket).
+* Human base mesh, body targets, skeleton and skin weights: MakeHuman / MPFB2
+  (github.com/makehumancommunity/mpfb2), CC0.
