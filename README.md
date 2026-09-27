@@ -25,7 +25,7 @@ traffic that queues at the signal and pulls away again.
 | Duration | 12 s: 288 frames at **24 fps** |
 | Resolution | **2048 × 858**: DCI 2K, 2.39:1 scope (change `res_x` / `res_y` for 16:9) |
 | Engine | Cycles, AgX view transform, OpenImageDenoise |
-| Camera | 32 mm, 131 m above the street, pitched 41° down; a 17 m forward glide with an 8.5 m descent, a handheld float and a slight roll |
+| Camera | 32 mm, 153 m above the street, pitched 42° down; a 17 m forward glide with an 8.5 m descent, a handheld float and a slight roll |
 | Scene | about 540 buildings, 5,000 objects and 1.5 M faces, all generated at build time |
 
 ![Frame 1 preview](preview/Cinematic_City_preview.jpg)
@@ -120,6 +120,16 @@ Everything it makes is prefixed `CC_`.
 * **Signage.** Painted, softly back-lit hoardings on walls and roofs with frames, back bracing, a
   maintenance walkway and floodlights, plus projecting neon blade signs. The lettering is real
   text, scaled to fit the panel it is painted on.
+* **Vehicle bodies.** Lofted from cross-sections rather than stacked out of boxes: a plan taper, a
+  shoulder line, a glasshouse with raked screens, wheels with a sidewall and a dished rim, door
+  mirrors. The glazed band is picked out of the loft by face angle and height, so a saloon gets a
+  greenhouse and a bus gets a window strip from the same code.
+* **Trees.** A leaning trunk, two orders of limbs, and crowns built from clumps of noise-displaced
+  spheres hung off the branch tips, so the silhouette breaks up instead of reading as a lollipop.
+* **Bevelled edges.** Every shading normal is rounded along its edges. Perfectly sharp edges are
+  the single biggest giveaway that something is CG, because real ones always carry a thin
+  highlight. It is done in the shader, so it costs no geometry; `bevel` in `P` is the radius and
+  0 turns it off.
 * **Light.** A physical sky with the sun 43° up in the north-west, so the shot is back-lit and the
   shadows rake across the avenue. The sun and sky are balanced by measurement rather than by eye —
   the sky model is physically bright, and a weak sun against it just gives flat blue overcast
@@ -137,6 +147,24 @@ Everything it makes is prefixed `CC_`.
 * **Culling.** The camera is built first, then every building is tested against the frustum at
   five points along the move. What the camera can see is built in full; what it cannot but which
   still casts a shadow into frame is built as a plain box; anything beyond that is skipped.
+
+### How closely it matches the reference
+
+The grade is measured, not eyeballed. A frame of the reference was letterbox-cropped and its
+tones measured, and the shot was tuned against those numbers:
+
+| | reference | this shot |
+|---|---|---|
+| shadows (10th percentile luma) | 0.039 | 0.057 |
+| median luma | 0.180 | 0.176 |
+| highlights (90th percentile) | 0.576 | 0.705 |
+| warm tilt (mean R − mean B) | +0.037 | +0.073 |
+
+The median sits within 0.04 stops and the cast now leans warm the same way it does in the
+reference; the highlights still run a little hot. What is **not** matched is the city itself.
+The street layout, the buildings, the advertising artwork and the camera move are this
+script's own. Reproducing the reference shot exactly would need its source file, not a video
+of it.
 
 ### The main controls in `P`
 

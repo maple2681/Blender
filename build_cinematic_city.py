@@ -42,8 +42,8 @@ import bmesh
 import os
 import random
 import time
-from math import radians, sin, cos, pi
-from mathutils import Vector, Euler, Matrix
+from math import radians, sin, cos, pi, copysign
+from mathutils import Vector, Euler, Matrix, noise as mnoise
 
 # ----------------------------------------------------------------------------
 #  PARAMETERS  (everything worth tweaking lives here)
@@ -63,8 +63,8 @@ P = dict(
     # "VIDEO" = MP4 straight away, "EXR" = multilayer EXR frames for grading
     output="PNG",
     # colour management
-    exposure=-2.15,                         # stops, AgX view transform
-    look="AgX - Medium High Contrast",
+    exposure=-2.42,                         # stops, AgX view transform
+    look="AgX - High Contrast",
     # --- sun and sky: late afternoon, sun low in the west and slightly ahead ------
     # azimuths are compass degrees, 0 = +Y (down the avenue, away from camera), 90 = +X (right)
     sun_elevation=43.0,                    # the canyon floor stays in shadow, the upper storeys burn
@@ -72,7 +72,7 @@ P = dict(
     sun_strength=95.0, sun_angle=0.545,    # measured against the sky for a ~6:1 sunny ratio
     #  (the sky model is physically bright: a weak sun here just gives flat, blue, overcast light)
     sun_tint=(1.0, 0.76, 0.47),            # warm low-sun filter on top of the physical sky
-    sky_strength=1.0,                      # the sky model at its own physical brightness
+    sky_strength=0.58,                     # held under the sun so the shadows stay deep
     air_density=1.0, aerosol_density=1.4, ozone_density=1.1,   # city air, but not soup
     bounce_light=True,                     # warm fill bouncing back off the sunlit facades
     # --- the city grid (metres) ---------------------------------------------
@@ -84,7 +84,7 @@ P = dict(
     lot_min=17.0, lot_max=38.0,            # frontage width of a single building lot
     # --- the hero tower on the left ------------------------------------------
     hero=True,
-    hero_x=(-132.0, -24.0), hero_y=(-96.0, 28.0), hero_h=113.0,
+    hero_x=(-142.0, -31.0), hero_y=(-96.0, 46.0), hero_h=97.0,
     hero_floor=3.85,                       # floor-to-floor height -> the facade banding
     # --- buildings ------------------------------------------------------------
     h_near=(26.0, 78.0),                   # height range for the blocks beside the camera
@@ -105,22 +105,24 @@ P = dict(
     street_lamps=True, trees=True, signage=True,
     # --- atmosphere --------------------------------------------------------------
     haze=True,
-    haze_density=0.00050,                  # 1/m at street level: god rays between the towers
+    haze_density=0.00018,                  # 1/m at street level: god rays between the towers
     haze_height=115.0,                     # e-folding height of the haze column
     haze_gain=1.0,
-    steam=True, steam_plumes=14, steam_density=1.0,
+    steam=True, steam_plumes=18, steam_density=1.05,
     # --- camera: a slow descending drift down the avenue --------------------------
-    cam_start=(-5.0, -86.0, 131.0),
+    cam_start=(2.0, -112.0, 153.0),
     cam_travel=17.0,                       # metres of forward glide over the shot
     cam_rise=-8.5,                         # net height change (negative = descends)
     cam_yaw=(6.0, 2.0),                    # degrees, + = looking right
-    cam_pitch=(-41.0, -36.0),              # degrees below horizontal at the start / end
+    cam_pitch=(-42.0, -37.0),              # degrees below horizontal at the start / end
     cam_roll=-1.2,
-    lens=32.0, sensor=36.0, fstop=5.6, focus_dist=185.0,
+    lens=32.0, sensor=36.0, fstop=5.6, focus_dist=215.0,
     cam_drift=True,                        # handheld float
     motion_blur=True,                      # the traffic needs it at 24 fps
     # --- geometry detail ---------------------------------------------------------
     use_volumes=True,
+    # shading-normal bevel radius in metres; 0 turns it off (a little faster, much more CG)
+    bevel=0.016,
 )
 
 LOG = []
@@ -224,10 +226,30 @@ def new_empty(name, c, loc=(0, 0, 0), size=0.5, kind='PLAIN_AXES', parent=None):
     return ob
 
 
+def bm_auto_smooth(bm, angle_deg=34.0):
+    """Smooth shading with creases kept sharp.
+
+    Flat-shaded cylinders are the quickest way to make a render look like plastic; this
+    smooths every face and then marks only the edges that are genuinely a corner as sharp,
+    which is what Blender's old auto-smooth did.
+    """
+    thr = radians(angle_deg)
+    for f in bm.faces:
+        f.smooth = True
+    for e in bm.edges:
+        if len(e.link_faces) == 2:
+            try:
+                e.smooth = e.link_faces[0].normal.angle(e.link_faces[1].normal, 0.0) <= thr
+            except ValueError:
+                e.smooth = True
+        else:
+            e.smooth = False
+    return bm
+
+
 def bm_to_obj(name, bm, c, mats=None, smooth=False, parent=None):
     if smooth:
-        for f in bm.faces:
-            f.smooth = True
+        bm_auto_smooth(bm, 34.0 if smooth is True else float(smooth))
     me = bpy.data.meshes.new("CC_" + name)
     bm.to_mesh(me)
     bm.free()
@@ -1082,6 +1104,24 @@ def edge_wear(g, strength=1.0, x=-900, y=-1000):
     return g.mrange(p, 0.42, 0.62, 0.0, strength, x=x, y=y)
 
 
+def bevel_n(g, radius=None, samples=4, normal=None, x=-620, y=620):
+    """Round the shading normal along every edge.
+
+    Perfectly sharp edges are the single biggest giveaway that something is CG: real edges
+    always carry a thin highlight. This does it in the shader, so it costs no geometry.
+    Returns the normal to feed onward (bump layers on top of it).
+    """
+    r = P["bevel"] if radius is None else radius
+    if r <= 0.0:
+        return normal
+    n = g.new('ShaderNodeBevel', x, y)
+    setp(n, "samples", samples)
+    g.set(n, {"Radius": r})
+    if normal is not None:
+        g.feed(g.i(n, "Normal"), normal)
+    return g.o(n, "Normal")
+
+
 def mat_get(key, fn, *a, **kw):
     if key not in MATS:
         MATS[key] = fn(*a, **kw)
@@ -1137,7 +1177,7 @@ def mat_brick(name="Brick", col=(0.30, 0.13, 0.085), mortar=(0.52, 0.49, 0.44),
     rough = g.mix(d, rough, 0.95, dtype='FLOAT', x=740, y=-260)
     hgt = g.math('ADD', g.math('MULTIPLY', brick, 0.85, x=440, y=-440),
                  g.math('MULTIPLY', g.fac(grain), 0.15, x=440, y=-520), x=580, y=-460)
-    nm = g.bump(hgt, strength=0.62, distance=0.012, x=900, y=-400)
+    nm = g.bump(hgt, strength=0.62, distance=0.012, normal=bevel_n(g, 0.020), x=900, y=-400)
     bsdf = g.principled(1300, 0, base=dirty, rough=rough, spec=0.32, normal=nm)
     return finish(m, g, out, bsdf)
 
@@ -1177,7 +1217,7 @@ def mat_stone(name="Stone", col=(0.40, 0.375, 0.335), panel=(1.35, 0.95), joint=
     rough = g.mix(g.fac(fine), 0.66, 0.86, dtype='FLOAT', x=460, y=-560)
     hgt = g.math('ADD', g.math('MULTIPLY', face, 0.8, x=300, y=200),
                  g.math('MULTIPLY', g.fac(fine), 0.2, x=300, y=120), x=460, y=180)
-    nm = g.bump(hgt, strength=0.5, distance=0.02, x=760, y=100)
+    nm = g.bump(hgt, strength=0.5, distance=0.02, normal=bevel_n(g, 0.020), x=760, y=100)
     bsdf = g.principled(1300, 0, base=base, rough=rough, spec=0.35, normal=nm)
     return finish(m, g, out, bsdf)
 
@@ -1206,12 +1246,12 @@ def mat_concrete(name="Concrete", col=(0.30, 0.295, 0.285), rough=0.78, scale=1.
     hgt = g.math('ADD', g.math('MULTIPLY', g.fac(form), 0.25, x=-340, y=200),
                  g.math('MULTIPLY', g.math('SUBTRACT', 1.0, hole_m, x=-340, y=100), 0.75,
                         x=-200, y=120), x=-40, y=180)
-    nm = g.bump(hgt, strength=0.42, distance=0.014, x=300, y=100)
+    nm = g.bump(hgt, strength=0.42, distance=0.014, normal=bevel_n(g, 0.020), x=300, y=100)
     bsdf = g.principled(1300, 0, base=base, rough=rgh, spec=0.3, normal=nm)
     return finish(m, g, out, bsdf)
 
 
-def mat_curtain_glass(name="CurtainGlass", tint=(0.055, 0.075, 0.085), panel=(1.55, None),
+def mat_curtain_glass(name="CurtainGlass", tint=(0.026, 0.033, 0.039), panel=(1.55, None),
                       lit=0.07, warm=(1.0, 0.72, 0.42)):
     """Curtain-wall glazing: mirror-dark panels, per-panel tint scatter, blinds, a few lit floors."""
     m, g, out = new_mat(name)
@@ -1219,7 +1259,7 @@ def mat_curtain_glass(name="CurtainGlass", tint=(0.055, 0.075, 0.085), panel=(1.
     uv, pz, nrm = wall_uv(g)
     rnd, lu, lv = cell_hash(g, uv, panel[0], ph, seed=3.0, x=-1150, y=200)
     # panel-to-panel darkness scatter (glass is never uniform)
-    shade = g.mrange(rnd, 0.0, 1.0, 0.55, 1.5, x=-650, y=260)
+    shade = g.mrange(rnd, 0.0, 1.0, 0.45, 1.15, x=-650, y=260)
     base = g.new('ShaderNodeHueSaturation', -480, 200)
     g.feed(g.i(base, "Color"), tint)
     g.feed(g.i(base, "Value"), shade)
@@ -1238,7 +1278,7 @@ def mat_curtain_glass(name="CurtainGlass", tint=(0.055, 0.075, 0.085), panel=(1.
     ledge = g.mrange(lv, 0.0, 0.16, 1.0, 0.0, x=-160, y=-300)
     dirt = g.math('ADD', g.math('MULTIPLY', d, 0.55, x=0, y=-280),
                   g.math('MULTIPLY', ledge, 0.28, x=0, y=-360), x=160, y=-320)
-    rough = g.mrange(dirt, 0.0, 1.0, 0.035, 0.30, x=320, y=-320)
+    rough = g.mrange(dirt, 0.0, 1.0, 0.075, 0.38, x=320, y=-320)
     rough = g.math('ADD', rough, g.mrange(rnd, 0.0, 1.0, 0.0, 0.035, x=320, y=-420), x=460, y=-360)
     col = g.mix(g.math('MULTIPLY', dirt, 0.5, x=320, y=-160), col, (0.075, 0.073, 0.068),
                 dtype='RGBA', x=480, y=40)
@@ -1248,7 +1288,7 @@ def mat_curtain_glass(name="CurtainGlass", tint=(0.055, 0.075, 0.085), panel=(1.
     emit = g.math('MULTIPLY', on, lamp, x=-320, y=-240)
     emit = g.math('MULTIPLY', emit, g.mrange(lv, 0.0, 1.0, 1.25, 0.55, x=-480, y=-360), x=-160, y=-240)
     bsdf = g.principled(1300, 0, base=col, rough=rough, metal=0.0, spec=1.0, ior=1.52,
-                        emit=warm, emit_str=emit)
+                        normal=bevel_n(g, 0.010), emit=warm, emit_str=emit)
     set_emission_sampling(m, 'NONE')
     return finish(m, g, out, bsdf)
 
@@ -1272,7 +1312,7 @@ def mat_window(name="Window", lit=None, warm=(1.0, 0.74, 0.45)):
     flick = g.mrange(rnd, 0.0, lit, 0.20, 1.10, x=-460, y=-300)
     emit = g.math('MULTIPLY', on, flick, x=-300, y=-280)
     bsdf = g.principled(1300, 0, base=col, rough=rough, spec=0.9, ior=1.5,
-                        emit=warm, emit_str=emit)
+                        normal=bevel_n(g, 0.008), emit=warm, emit_str=emit)
     set_emission_sampling(m, 'NONE')
     return finish(m, g, out, bsdf)
 
@@ -1293,8 +1333,8 @@ def mat_roofdeck(name="RoofDeck"):
     dirt = g.noise(g.mapping(pos, scale=(1.4, 1.4, 1.4), x=-1600, y=-600), scale=3.0,
                    detail=8.0, rough=0.62, x=-1420, y=-600)
     base = g.mix(g.mrange(g.fac(patch), 0.36, 0.64, 0.0, 1.0, x=-1200, y=-180),
-                 (0.028, 0.027, 0.026), (0.075, 0.071, 0.066), dtype='RGBA', x=-1000, y=-80)
-    base = g.mix(0.45, base, g.o(grav, "Distance"), dtype='RGBA', blend='OVERLAY', x=-820, y=-80)
+                 (0.017, 0.016, 0.016), (0.046, 0.043, 0.040), dtype='RGBA', x=-1000, y=-80)
+    base = g.mix(0.20, base, g.o(grav, "Distance"), dtype='RGBA', blend='OVERLAY', x=-820, y=-80)
     base = g.mix(0.30, base, g.fac(dirt), dtype='RGBA', blend='MULTIPLY', x=-660, y=-80)
     wet = g.mrange(g.fac(pond), 0.60, 0.78, 0.0, 1.0, x=-1200, y=-400)
     base = g.mix(g.math('MULTIPLY', wet, 0.7, x=-1040, y=-400), base, (0.012, 0.013, 0.014),
@@ -1303,7 +1343,7 @@ def mat_roofdeck(name="RoofDeck"):
     rough = g.mix(wet, rough, 0.13, dtype='FLOAT', x=-300, y=-300)
     hgt = g.math('ADD', g.math('MULTIPLY', g.o(grav, "Distance"), 0.55, x=-1040, y=300),
                  g.math('MULTIPLY', g.fac(lap), 0.45, x=-1040, y=380), x=-880, y=340)
-    nm = g.bump(hgt, strength=0.55, distance=0.02, x=-200, y=260)
+    nm = g.bump(hgt, strength=0.55, distance=0.02, normal=bevel_n(g, 0.016), x=-200, y=260)
     bsdf = g.principled(1300, 0, base=base, rough=rough, spec=0.3, normal=nm)
     return finish(m, g, out, bsdf)
 
@@ -1440,7 +1480,7 @@ def mat_sidewalk(name="Sidewalk"):
     rough = g.mrange(g.fac(dirt), 0.0, 1.0, 0.72, 0.90, x=-320, y=-360)
     hgt = g.math('ADD', g.math('MULTIPLY', slab, 0.7, x=-540, y=420),
                  g.math('MULTIPLY', g.o(grit, "Distance"), 0.3, x=-540, y=340), x=-380, y=400)
-    nm = g.bump(hgt, strength=0.45, distance=0.014, x=100, y=300)
+    nm = g.bump(hgt, strength=0.45, distance=0.014, normal=bevel_n(g, 0.014), x=100, y=300)
     bsdf = g.principled(1300, 0, base=col, rough=rough, spec=0.3, normal=nm)
     return finish(m, g, out, bsdf)
 
@@ -1476,7 +1516,7 @@ def mat_metal(name, col=(0.44, 0.45, 0.46), rough=0.42, metal=1.0, rust=0.25, sc
                 0.92, dtype='FLOAT', x=-140, y=-400)
     hgt = g.math('ADD', g.math('MULTIPLY', g.fac(r_big), dent, x=-300, y=200),
                  g.math('MULTIPLY', rmask, 0.5, x=-300, y=120), x=-140, y=180)
-    nm = g.bump(hgt, strength=0.35, distance=0.01, x=300, y=120)
+    nm = g.bump(hgt, strength=0.35, distance=0.01, normal=bevel_n(g, 0.006), x=300, y=120)
     bsdf = g.principled(1300, 0, base=base, metal=mtl, rough=rgh, normal=nm)
     return finish(m, g, out, bsdf)
 
@@ -1508,25 +1548,38 @@ def mat_tank_wood(name="TankWood"):
     hgt = g.math('ADD', g.math('MULTIPLY', g.math('SUBTRACT', 1.0, gap, x=-660, y=320), 0.6,
                                x=-500, y=320),
                  g.math('MULTIPLY', g.fac(fibre), 0.4, x=-500, y=240), x=-340, y=300)
-    nm = g.bump(hgt, strength=0.55, distance=0.014, x=100, y=220)
+    nm = g.bump(hgt, strength=0.55, distance=0.014, normal=bevel_n(g, 0.010), x=100, y=220)
     bsdf = g.principled(1300, 0, base=col, rough=rough, spec=0.28, normal=nm)
     return finish(m, g, out, bsdf)
 
 
-def mat_car_paint(name, col=(0.6, 0.45, 0.02), rough=0.24, flake=0.35):
+def mat_car_paint(name, col=(0.6, 0.45, 0.02), rough=0.24, flake=0.35, vary=0.20):
+    """Clearcoat paint. One material serves the whole fleet: each instance shifts its own
+    shade off the object's random value, so no two cars in a lane are the same colour."""
     m, g, out = new_mat(name)
-    dust = g.noise(g.mapping(obj_pos(g, -1200, 0), scale=(3.0, 3.0, 3.0), x=-1000, y=-180),
-                   scale=4.0, detail=6.0, rough=0.6, x=-820, y=-180)
-    base = g.mix(0.16, col, g.fac(dust), dtype='RGBA', blend='MULTIPLY', x=-600, y=-60)
+    dust = g.noise(g.mapping(obj_pos(g, -1500, 0), scale=(3.0, 3.0, 3.0), x=-1300, y=-180),
+                   scale=4.0, detail=6.0, rough=0.6, x=-1120, y=-180)
+    r = obj_random(g, -1500, -480)
+    tint = g.new('ShaderNodeHueSaturation', -820, 60)
+    g.feed(g.i(tint, "Color"), col)
+    g.feed(g.i(tint, "Hue"), g.mrange(r, 0.0, 1.0, 0.5 - vary * 0.05, 0.5 + vary * 0.05,
+                                      x=-1040, y=140))
+    g.feed(g.i(tint, "Saturation"), g.mrange(r, 0.0, 1.0, 1.0 - vary * 0.55, 1.0 + vary * 0.30,
+                                             x=-1040, y=20))
+    g.feed(g.i(tint, "Value"), g.mrange(r, 0.0, 1.0, 1.0 - vary, 1.0 + vary * 0.85,
+                                        x=-1040, y=-100))
+    base = g.mix(0.14, g.o(tint, "Color"), g.fac(dust), dtype='RGBA', blend='MULTIPLY',
+                 x=-600, y=-60)
     rgh = g.mrange(g.fac(dust), 0.0, 1.0, rough - 0.06, rough + 0.12, x=-600, y=-300)
-    bsdf = g.principled(1300, 0, base=base, rough=rgh, metal=flake, coat=0.85, coat_rough=0.09,
-                        spec=0.6)
+    bsdf = g.principled(1300, 0, base=base, rough=rgh, metal=flake, coat=0.92, coat_rough=0.06,
+                        spec=0.6, normal=bevel_n(g, 0.008))
     return finish(m, g, out, bsdf)
 
 
 def mat_car_glass(name="CarGlass"):
     m, g, out = new_mat(name)
-    bsdf = g.principled(1300, 0, base=(0.016, 0.018, 0.021), rough=0.07, spec=1.0, ior=1.52)
+    bsdf = g.principled(1300, 0, base=(0.016, 0.018, 0.021), rough=0.07, spec=1.0, ior=1.52,
+                        normal=bevel_n(g, 0.006))
     return finish(m, g, out, bsdf)
 
 
@@ -1551,7 +1604,8 @@ def mat_plain(name, col=(0.2, 0.2, 0.2), rough=0.6, metal=0.0, noise_scale=0.0, 
             nmm = g.bump(g.fac(n), strength=bump, distance=0.01, x=-300, y=200)
             bsdf = g.principled(1300, 0, base=base, rough=rgh, metal=metal, normal=nmm)
             return finish(m, g, out, bsdf)
-    bsdf = g.principled(1300, 0, base=base, rough=rgh, metal=metal)
+    bsdf = g.principled(1300, 0, base=base, rough=rgh, metal=metal,
+                        normal=bevel_n(g, 0.008))
     return finish(m, g, out, bsdf)
 
 
@@ -1654,7 +1708,7 @@ def mat_facade_far(name, style):
                                         x=-260, y=-360), x=180, y=-400)
     emit = g.math('MULTIPLY', on, g.mrange(rnd, 0.0, 1.0, 0.2, 0.9, x=180, y=-500), x=360, y=-420)
     nm = g.bump(g.math('SUBTRACT', 1.0, win, x=360, y=220), strength=0.3, distance=0.03,
-                x=540, y=200)
+                normal=bevel_n(g, 0.018), x=540, y=200)
     bsdf = g.principled(1300, 0, base=base, rough=rough, spec=0.4, normal=nm,
                         emit=(1.0, 0.74, 0.45), emit_str=emit)
     set_emission_sampling(m, 'NONE')
@@ -1855,19 +1909,25 @@ def build_facade(bm, spec, rect, z0, z1, style, rng, exposed, reveal, fh):
 
 
 def build_roof(bm, rect, z, style, rng, parapet=True):
-    """Roof deck, parapet wall and its stone coping."""
+    """Roof deck, parapet wall and its stone coping. Returns the height of the deck surface.
+
+    The deck is a thin slab laid ON TOP of the mass rather than sunk into it: cut into the
+    mass its top face lands exactly on the mass's own top face, and the two z-fight, which
+    left half the roofs in the city wearing their wall material.
+    """
     x0, x1, y0, y1 = rect
-    mslot(bm, SLOT_ROOF, slab, x0, x1, y0, y1, z - 0.22, z)
+    deck = z + 0.06
+    mslot(bm, SLOT_ROOF, slab, x0, x1, y0, y1, z, deck)
     if not parapet:
-        return z
+        return deck
     ph = rng.uniform(0.85, 1.55)
     t = rng.uniform(0.28, 0.45)
     for axis, sgn in SIDES:
         plane, (a0, a1) = side_plane(rect, axis, sgn)
-        mslot(bm, SLOT_WALL, face_box, axis, sgn, plane, a0, a1, z, z + ph, -t)
+        mslot(bm, SLOT_WALL, face_box, axis, sgn, plane, a0, a1, deck, deck + ph, -t)
         mslot(bm, SLOT_TRIM, face_box, axis, sgn, plane + 0.05 * sgn, a0, a1,
-              z + ph, z + ph + 0.09, -(t + 0.10))
-    return z + ph
+              deck + ph, deck + ph + 0.09, -(t + 0.10))
+    return deck
 
 
 def build_building(spec, specs, c, rng):
@@ -1885,12 +1945,13 @@ def build_building(spec, specs, c, rng):
         if spec["detail"]:
             mslot(bm, SLOT_WALL, slab, x0 + reveal, x1 - reveal, y0 + reveal, y1 - reveal, z0, z1)
             build_facade(bm, spec, rect, z0, z1, style, rng, exposed, reveal, fh)
-            top = build_roof(bm, (x0 + reveal, x1 - reveal, y0 + reveal, y1 - reveal), z1, style, rng)
+            deck = build_roof(bm, (x0 + reveal, x1 - reveal, y0 + reveal, y1 - reveal),
+                              z1, style, rng)
         else:
             mslot(bm, SLOT_WALL, slab, x0, x1, y0, y1, 0.0, z1)
             mslot(bm, SLOT_ROOF, slab, x0 + 0.3, x1 - 0.3, y0 + 0.3, y1 - 0.3, z1, z1 + 0.35)
-            top = z1 + 0.35
-        roofs.append(((x0 + reveal, x1 - reveal, y0 + reveal, y1 - reveal), z1, top))
+            deck = z1 + 0.35
+        roofs.append(((x0 + reveal, x1 - reveal, y0 + reveal, y1 - reveal), deck, deck))
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-4)
     key = "far_" + style
     if spec["detail"]:
@@ -1963,7 +2024,7 @@ def proto_water_tank(c, r=1.95, body=4.3, legs=3.4, seg=22):
         mslot(bm, 1, obox, (lx, -0.22, k), (lx, 0.22, k), (0, 0, 1), 0.035, 0.035)
         k += 0.33
     mslot(bm, 1, bm_cyl, (0.0, 0.0, z0 + body + 1.05), 0.075, 0.5, segs=8)   # vent pipe
-    return proto("tank", bm, [MATS["tankwood"], MATS["galv"]], c)
+    return proto("tank", bm, [MATS["tankwood"], MATS["galv"]], c, smooth=38.0)
 
 
 def proto_ac_unit(c, w=2.4, d=1.7, h=1.25, fans=1, louvre=True):
@@ -1995,7 +2056,7 @@ def proto_ac_unit(c, w=2.4, d=1.7, h=1.25, fans=1, louvre=True):
             mslot(bm, 1, obox, (cx - rr * cos(a), -rr * sin(a), 0.16 + h + 0.30),
                   (cx + rr * cos(a), rr * sin(a), 0.16 + h + 0.30), (0, 0, 1), 0.02, 0.02)
     mslot(bm, 1, bm_cyl, (-w / 2 + 0.25, -d / 2 - 0.18, 0.55), 0.085, 0.8, rot=(pi / 2, 0, 0), segs=8)
-    return proto("ac%d" % int(w * 10), bm, [MATS["paint_grey"], MATS["galv"]], c)
+    return proto("ac%d" % int(w * 10), bm, [MATS["paint_grey"], MATS["galv"]], c, smooth=38.0)
 
 
 def proto_condenser(c, n=4, w=1.15):
@@ -2015,7 +2076,7 @@ def proto_condenser(c, n=4, w=1.15):
             a = pi * k / 5
             mslot(bm, 1, obox, (cx - w * 0.40 * cos(a), -w * 0.40 * sin(a), 1.02),
                   (cx + w * 0.40 * cos(a), w * 0.40 * sin(a), 1.02), (0, 0, 1), 0.016, 0.016)
-    return proto("cond%d" % n, bm, [MATS["paint_grey"], MATS["galv"]], c)
+    return proto("cond%d" % n, bm, [MATS["paint_grey"], MATS["galv"]], c, smooth=38.0)
 
 
 def proto_vent(c, kind=0):
@@ -2033,7 +2094,7 @@ def proto_vent(c, kind=0):
         mslot(bm, 0, bm_cyl, (0, 0, 1.0), 0.15, 2.0, segs=12)
         mslot(bm, 0, bm_torus, (0, 0, 1.95), 0.19, 0.035, seg=12, rseg=5)
         mslot(bm, 0, bm_cyl, (0, 0, 0.05), 0.24, 0.10, segs=12)
-    return proto("vent%d" % kind, bm, [MATS["galv"]], c)
+    return proto("vent%d" % kind, bm, [MATS["galv"]], c, smooth=38.0)
 
 
 def proto_bulkhead(c, w=4.4, d=3.4, h=3.0):
@@ -2057,7 +2118,7 @@ def proto_dish(c, r=0.85):
     mslot(bm, 0, obox, (0, 0, 1.35), (0, -r * 0.62, 1.35 + r * 0.50), (0, 0, 1), 0.05, 0.05)
     mslot(bm, 0, bm_cyl, (0, 0, 0.68), 0.075, 1.36, segs=10)
     mslot(bm, 0, slab, -0.3, 0.3, -0.3, 0.3, 0.0, 0.10)
-    return proto("dish", bm, [MATS["paint_grey"]], c)
+    return proto("dish", bm, [MATS["paint_grey"]], c, smooth=42.0)
 
 
 def proto_antenna(c, h=7.5):
@@ -2099,7 +2160,7 @@ def proto_duct(c, L=6.0, w=0.75):
     mslot(bm, 0, bm_tube, [(L / 2, 0, 0.55 + w / 2), (L / 2 + 0.55, 0, 0.55 + w / 2),
                            (L / 2 + 0.85, 0, 0.55 + w * 0.9), (L / 2 + 0.95, 0, 0.55 + w * 1.5)],
           w * 0.45, seg=10)
-    return proto("duct", bm, [MATS["galv"], MATS["paint_grey"]], c)
+    return proto("duct", bm, [MATS["galv"], MATS["paint_grey"]], c, smooth=38.0)
 
 
 def proto_skylight(c, w=2.6, d=1.8):
@@ -2121,7 +2182,7 @@ def proto_pipe_cluster(c):
         mslot(bm, 0, bm_cyl, (x, rng.uniform(-0.2, 0.2), h / 2), rng.uniform(0.05, 0.10), h, segs=8)
     mslot(bm, 0, bm_tube, [(-0.95, 0, 0.35), (0.95, 0, 0.35)], 0.07, seg=8)
     mslot(bm, 1, slab, -1.1, 1.1, -0.35, 0.35, 0.0, 0.12)
-    return proto("pipes", bm, [MATS["galv"], MATS["paint_grey"]], c)
+    return proto("pipes", bm, [MATS["galv"], MATS["paint_grey"]], c, smooth=38.0)
 
 
 def build_crane(c, x, y, z, h=34.0, jib=26.0, rot=0.0):
@@ -2304,10 +2365,10 @@ def dress_roof(spec, c, rng, protos):
                 n_items += 1
         # timber water tanks: the older and lower the building, the more likely
         if P["water_tanks"]:
-            pw = 0.92 if spec["style"] in ('brick', 'stone') and spec["h"] < 105.0 else 0.50
-            for _ in range(3 if area > 520.0 else (2 if area > 240.0 else 1)):
+            pw = 0.55 if spec["style"] in ('brick', 'stone') and spec["h"] < 105.0 else 0.22
+            for _ in range(2 if area > 520.0 else 1):
                 if rng.random() < pw:
-                    s = rng.uniform(0.82, 1.20)
+                    s = rng.uniform(0.72, 1.32)
                     p = free_spot(taken, x0, x1, y0, y1, 5.2 * s, 5.2 * s, rng)
                     if p:
                         place(protos["tank"], c, (p[0], p[1], z), rng.uniform(0, 2 * pi), s)
@@ -2472,13 +2533,31 @@ def build_street_furniture(c, rng):
         n += 1
     ob = bm_to_obj("StreetFurniture", bm, c,
                    [MATS["paint_dark"], MATS["lamp_glass"], MATS["signal_body"],
-                    MATS["lens_red"], MATS["lens_amber"], MATS["lens_green"], MATS["hydrant"]])
+                    MATS["lens_red"], MATS["lens_amber"], MATS["lens_green"], MATS["hydrant"]],
+                   smooth=36.0)
     log("street furniture: %d fittings" % n)
     return ob
 
 
+def blob(bm, cc, r, rng, amp=0.34, freq=1.9, useg=12, vseg=8):
+    """One clump of foliage: a sphere pushed about by coherent noise, so the crown
+    breaks up into lobes instead of reading as a ball."""
+    cc = Vector(cc)
+    verts = bm_sphere(bm, cc, r, scale=(rng.uniform(0.82, 1.28), rng.uniform(0.82, 1.28),
+                                        rng.uniform(0.60, 0.95)), useg=useg, vseg=vseg)
+    off = Vector((rng.uniform(-60, 60), rng.uniform(-60, 60), rng.uniform(-60, 60)))
+    k = freq / max(0.25, r)
+    for v in verts:
+        d = v.co - cc
+        if d.length < 1e-6:
+            continue
+        v.co = cc + d * (1.0 + amp * mnoise.noise(d * k + off))
+    return verts
+
+
 def build_trees(c, rng):
-    """Plane trees in kerb pits: a trunk, a few limbs and a clumped crown."""
+    """Plane trees in kerb pits: a leaning trunk, two orders of limbs, and crown clumps
+    hung off the branch tips."""
     if not P["trees"]:
         return None
     bm_t = bmesh.new()
@@ -2487,28 +2566,39 @@ def build_trees(c, rng):
     spots = []
     y = P["cross_streets"][0] + 40.0
     while y < min(P["city_far"], 430.0):
-        for s in (-1, 1):
+        for sx in (-1, 1):
             if rng.random() < 0.40:
-                spots.append((P["avenue_x"] + s * (half + 2.6), y + rng.uniform(-2.5, 2.5)))
+                spots.append((P["avenue_x"] + sx * (half + 2.6), y + rng.uniform(-2.5, 2.5)))
         y += 21.0
     for (x, y) in spots:
-        h = rng.uniform(5.5, 8.4)
-        r0 = h * 0.028
-        bm_cyl(bm_t, (x, y, h * 0.30), r0, h * 0.60, segs=8, r2=r0 * 0.72)
-        crown = h * 0.62
-        for k in range(rng.randint(3, 5)):
-            a = 2 * pi * k / 4 + rng.uniform(-0.5, 0.5)
-            tip = (x + cos(a) * h * 0.20, y + sin(a) * h * 0.20, crown + h * 0.18)
-            bm_tube(bm_t, [(x, y, h * 0.52), tip], r0 * 0.55, seg=5, r_end=r0 * 0.22)
-        for k in range(rng.randint(5, 9)):
-            a = rng.uniform(0, 2 * pi)
-            rr = rng.uniform(0.0, 1.0) ** 0.6 * h * 0.28
-            bm_sphere(bm_l, (x + cos(a) * rr, y + sin(a) * rr,
-                             crown + rng.uniform(-0.1, 0.42) * h * 0.30),
-                      rng.uniform(0.85, 1.5) * h * 0.115,
-                      scale=(1.0, 1.0, rng.uniform(0.62, 0.85)), useg=10, vseg=6)
+        h = rng.uniform(6.2, 9.0)
+        r0 = h * 0.030
+        base = Vector((x, y, 0.16))
+        top = base + Vector((rng.uniform(-0.3, 0.3), rng.uniform(-0.3, 0.3), h * 0.47))
+        mid = base.lerp(top, 0.52) + Vector((rng.uniform(-0.12, 0.12), rng.uniform(-0.12, 0.12), 0))
+        bm_tube(bm_t, [base, mid, top], r0, seg=9, r_end=r0 * 0.60)
+        tips = []
+        n_lim = rng.randint(3, 5)
+        for k in range(n_lim):
+            a = 2 * pi * k / n_lim + rng.uniform(-0.5, 0.5)
+            reach = h * rng.uniform(0.20, 0.34)
+            tip = top + Vector((cos(a) * reach, sin(a) * reach, h * rng.uniform(0.16, 0.30)))
+            knee = top.lerp(tip, 0.55) + Vector((0.0, 0.0, h * 0.05))
+            bm_tube(bm_t, [top, knee, tip], r0 * 0.58, seg=7, r_end=r0 * 0.20)
+            tips.append(tip)
+            for _ in range(rng.randint(1, 2)):
+                a2 = a + rng.uniform(-0.9, 0.9)
+                r2 = reach * rng.uniform(0.35, 0.62)
+                t2 = tip + Vector((cos(a2) * r2, sin(a2) * r2, h * rng.uniform(0.04, 0.15)))
+                bm_tube(bm_t, [tip, t2], r0 * 0.22, seg=6, r_end=r0 * 0.10)
+                tips.append(t2)
+        for t in tips:
+            for _ in range(rng.randint(1, 3)):
+                cc = t + Vector((rng.uniform(-0.55, 0.55), rng.uniform(-0.55, 0.55),
+                                 rng.uniform(-0.25, 0.55)))
+                blob(bm_l, cc, h * rng.uniform(0.085, 0.150), rng)
         bm_box(bm_t, (x, y, 0.17), (1.5, 1.5, 0.06))
-    trunk = bm_to_obj("TreeTrunks", bm_t, c, [MATS["bark"]])
+    trunk = bm_to_obj("TreeTrunks", bm_t, c, [MATS["bark"]], smooth=40.0)
     leaf = bm_to_obj("TreeCrowns", bm_l, c, [MATS["foliage"]], smooth=True)
     log("trees: %d" % len(spots))
     return trunk, leaf
@@ -2517,81 +2607,206 @@ def build_trees(c, rng):
 # ============================================================================
 #  VEHICLES
 # ============================================================================
-def wheel(bm, x, y, r=0.34, w=0.22, slot=2):
-    mslot(bm, slot, bm_cyl, (x, y, r), r, w, rot=(pi / 2, 0, 0), segs=12)
-    mslot(bm, 3, bm_cyl, (x, y, r), r * 0.55, w * 1.06, rot=(pi / 2, 0, 0), segs=10)
+def _interp(table, u):
+    """Piecewise-linear lookup over [(u, value), ...] with u rising."""
+    if u <= table[0][0]:
+        return table[0][1]
+    for (u0, v0), (u1, v1) in zip(table[:-1], table[1:]):
+        if u <= u1:
+            t = 0.0 if u1 == u0 else (u - u0) / (u1 - u0)
+            return v0 + (v1 - v0) * t
+    return table[-1][1]
 
 
-def proto_car(c, name, L=4.55, W=1.85, kind='sedan', body_slot=0):
-    """A road vehicle: body, greenhouse, wheels, lamps. Slots: 0 paint 1 glass 2 tyre
-    3 trim 4 headlamp 5 tail lamp."""
+def rounded_section(a, z0, z1, n=18, e_top=3.0, e_bot=2.4):
+    """A closed super-ellipse ring in (y, z): the cross-section of a car body.
+
+    e = 2 is an ellipse, 4 is a rounded rectangle, large is a box. Cars want a softer
+    top than bottom, vans and buses want both squarer.
+    """
+    zc, zh = 0.5 * (z0 + z1), 0.5 * (z1 - z0)
+    out = []
+    for i in range(n):
+        t = 2.0 * pi * i / n
+        cy, sz = cos(t), sin(t)
+        e = e_top if sz >= 0.0 else e_bot
+        out.append((a * copysign(abs(cy) ** (2.0 / e), cy),
+                    zc + zh * copysign(abs(sz) ** (2.0 / e), sz)))
+    return out
+
+
+def loft(bm, xs, rings, slot, cap_start=True, cap_end=True):
+    """Skin a run of cross-sections into a surface; returns the faces it made."""
+    n0 = len(bm.faces)
+    vr = [[bm.verts.new((x, y, z)) for (y, z) in ring] for x, ring in zip(xs, rings)]
+    m = len(rings[0])
+    for ra, rb in zip(vr[:-1], vr[1:]):
+        for k in range(m):
+            k2 = (k + 1) % m
+            try:
+                bm.faces.new((ra[k], ra[k2], rb[k2], rb[k]))
+            except ValueError:
+                pass                                   # degenerate ring end: skip the sliver
+    if cap_start:
+        bm.faces.new(list(reversed(vr[0])))
+    if cap_end:
+        bm.faces.new(vr[-1])
+    bm.faces.ensure_lookup_table()
+    faces = list(bm.faces[n0:])
+    for f in faces:
+        f.material_index = slot
+    return faces
+
+
+def wheel(bm, x, y, r=0.34, w=0.23, seg=20):
+    """A road wheel: tyre with rounded shoulders, a dished rim and a hub."""
+    t = [(r * 0.40, -w / 2), (r * 0.80, -w / 2), (r * 0.95, -w / 2 + 0.035),
+         (r, -w / 2 + 0.095), (r, w / 2 - 0.095), (r * 0.95, w / 2 - 0.035),
+         (r * 0.80, w / 2), (r * 0.40, w / 2)]
+    mslot(bm, 2, bm_lathe, t, loc=(x, y, r), rot=(pi / 2, 0, 0), seg=seg)
+    rim = [(0.0, -w * 0.30), (r * 0.44, -w * 0.34), (r * 0.62, -w * 0.20),
+           (r * 0.66, w * 0.10), (r * 0.40, w * 0.22), (0.0, w * 0.22)]
+    mslot(bm, 3, bm_lathe, rim, loc=(x, y, r), rot=(pi / 2, 0, 0), seg=seg,
+          cap_bottom=True, cap_top=True)
+
+
+# Body shapes, as tables in u (0 = rear bumper, 1 = front bumper).
+#   plan  - half-width as a fraction of the full half-width
+#   sill  - height of the bottom of the body
+#   belt  - height of the shoulder line the glasshouse sits on
+#   cab   - the span of u the glasshouse covers
+#   gh    - glasshouse height over that span, as a fraction of roof_h
+#   ghw   - glasshouse half-width as a fraction of the body's at that station
+CAR_SHAPES = {
+    'sedan': dict(
+        plan=[(0.00, 0.52), (0.05, 0.84), (0.14, 0.96), (0.30, 1.00), (0.66, 1.00),
+              (0.84, 0.96), (0.95, 0.82), (1.00, 0.54)],
+        sill=[(0.00, 0.44), (0.07, 0.33), (0.16, 0.29), (0.84, 0.29), (0.93, 0.32), (1.00, 0.42)],
+        belt=[(0.00, 0.78), (0.09, 0.85), (0.28, 0.88), (0.60, 0.88), (0.78, 0.84),
+              (0.92, 0.78), (1.00, 0.70)],
+        cab=(0.17, 0.72), roof_h=0.54,
+        gh=[(0.00, 0.0), (0.09, 0.58), (0.24, 0.95), (0.48, 1.00), (0.66, 0.97),
+            (0.88, 0.48), (1.00, 0.0)],
+        ghw=[(0.00, 0.50), (0.12, 0.80), (0.30, 0.92), (0.70, 0.92), (0.88, 0.76), (1.00, 0.48)],
+        e_top=3.0, e_bot=2.5, wheels=(0.21, 0.79), wheel_r=0.33, wheel_w=0.22, roof_frac=0.66),
+    'suv': dict(
+        plan=[(0.00, 0.62), (0.05, 0.90), (0.13, 0.98), (0.28, 1.00), (0.70, 1.00),
+              (0.86, 0.97), (0.95, 0.86), (1.00, 0.62)],
+        sill=[(0.00, 0.50), (0.07, 0.40), (0.16, 0.36), (0.84, 0.36), (0.93, 0.39), (1.00, 0.49)],
+        belt=[(0.00, 0.98), (0.09, 1.04), (0.28, 1.06), (0.66, 1.06), (0.84, 1.00),
+              (0.94, 0.92), (1.00, 0.84)],
+        cab=(0.12, 0.76), roof_h=0.62,
+        gh=[(0.00, 0.0), (0.06, 0.72), (0.18, 0.98), (0.60, 1.00), (0.74, 0.94),
+            (0.92, 0.42), (1.00, 0.0)],
+        ghw=[(0.00, 0.52), (0.10, 0.84), (0.26, 0.94), (0.74, 0.94), (0.90, 0.78), (1.00, 0.50)],
+        e_top=3.6, e_bot=3.0, wheels=(0.20, 0.80), wheel_r=0.38, wheel_w=0.25, roof_frac=0.62),
+    'van': dict(
+        plan=[(0.00, 0.80), (0.04, 0.96), (0.10, 1.00), (0.88, 1.00), (0.96, 0.92), (1.00, 0.68)],
+        sill=[(0.00, 0.46), (0.06, 0.38), (0.14, 0.35), (0.86, 0.35), (0.94, 0.38), (1.00, 0.48)],
+        belt=[(0.00, 2.05), (0.06, 2.14), (0.14, 2.17), (0.72, 2.17), (0.86, 2.02),
+              (0.95, 1.62), (1.00, 1.22)],
+        cab=(0.0, 0.0), roof_h=0.0, gh=[], ghw=[],
+        e_top=5.0, e_bot=3.4, wheels=(0.19, 0.81), wheel_r=0.38, wheel_w=0.24, roof_frac=0.0),
+    'bus': dict(
+        plan=[(0.00, 0.78), (0.03, 0.96), (0.07, 1.00), (0.93, 1.00), (0.97, 0.96), (1.00, 0.78)],
+        sill=[(0.00, 0.52), (0.04, 0.44), (0.10, 0.41), (0.90, 0.41), (0.96, 0.44), (1.00, 0.52)],
+        belt=[(0.00, 2.92), (0.04, 3.04), (0.10, 3.08), (0.90, 3.08), (0.96, 3.02), (1.00, 2.88)],
+        cab=(0.0, 0.0), roof_h=0.0, gh=[], ghw=[],
+        e_top=5.5, e_bot=3.6, wheels=(0.13, 0.86), wheel_r=0.50, wheel_w=0.26, roof_frac=0.0),
+}
+CAR_SHAPES['truck'] = dict(
+    plan=[(0.00, 0.86), (0.03, 0.98), (0.08, 1.00), (0.60, 1.00), (0.65, 0.92),
+          (0.92, 0.90), (1.00, 0.68)],
+    sill=[(0.00, 0.94), (0.05, 0.90), (0.60, 0.90), (0.645, 0.50), (0.70, 0.46),
+          (0.94, 0.48), (1.00, 0.58)],
+    belt=[(0.00, 3.02), (0.04, 3.12), (0.10, 3.15), (0.60, 3.15), (0.645, 2.34),
+          (0.72, 2.30), (0.92, 2.08), (1.00, 1.66)],
+    cab=(0.0, 0.0), roof_h=0.0, gh=[], ghw=[],
+    glass=(1.52, 2.24, 0.64, 1.00),
+    e_top=5.5, e_bot=3.6, wheels=(0.20, 0.82), wheel_r=0.46, wheel_w=0.26, roof_frac=0.0)
+CAR_SHAPES['van']['glass'] = (1.34, 1.98, 0.58, 1.00)      # a panel van: cab glazing only
+CAR_SHAPES['bus']['glass'] = (1.92, 2.82, 0.04, 0.97)
+CAR_SHAPES['cab'] = dict(CAR_SHAPES['sedan'], roof_h=0.58, cab=(0.16, 0.73))
+
+
+def glass_band(bm, faces, z_lo, z_hi, x_lo=-1e9, x_hi=1e9, glass_slot=1, body_slot=0):
+    """Split a lofted volume into a glazed band and painted metal above and below it."""
+    for f in faces:
+        ctr = f.calc_center_median()
+        side = abs(f.normal.z) < 0.55                # the roof and floor stay painted
+        glazed = side and z_lo < ctr.z < z_hi and x_lo <= ctr.x <= x_hi
+        f.material_index = glass_slot if glazed else body_slot
+
+
+def proto_car(c, name, L=4.55, W=1.85, kind='sedan'):
+    """A road vehicle lofted from cross-sections. Slots: 0 paint 1 glass 2 tyre 3 rim
+    4 headlamp 5 tail lamp 6 cab sign."""
+    sh = CAR_SHAPES[kind]
     bm = bmesh.new()
-    hw, hl = W / 2, L / 2
-    if kind in ('sedan', 'cab', 'suv'):
-        tall = 0.52 if kind != 'suv' else 0.68
-        z0 = 0.30 if kind != 'suv' else 0.38
-        mslot(bm, body_slot, slab, -hl, hl, -hw, hw, z0, z0 + tall)
-        mslot(bm, body_slot, slab, -hl * 0.96, hl * 0.90, -hw * 0.93, hw * 0.93,
-              z0 + tall, z0 + tall + 0.06)
-        # greenhouse, set in from the body sides
-        cl0, cl1 = -hl * 0.55, hl * 0.42
-        mslot(bm, 1, slab, cl0, cl1, -hw * 0.88, hw * 0.88, z0 + tall + 0.02, z0 + tall + 0.50)
-        mslot(bm, body_slot, slab, cl0 + 0.10, cl1 - 0.10, -hw * 0.90, hw * 0.90,
-              z0 + tall + 0.50, z0 + tall + 0.56)
-        mslot(bm, 3, slab, -hl - 0.05, -hl * 0.86, -hw * 0.98, hw * 0.98, z0 + 0.04, z0 + 0.20)
-        mslot(bm, 3, slab, hl * 0.86, hl + 0.05, -hw * 0.98, hw * 0.98, z0 + 0.04, z0 + 0.20)
-        for sx in (-hl * 0.66, hl * 0.66):
-            for sy in (-hw - 0.02, hw + 0.02):
-                wheel(bm, sx, sy)
-        for sy in (-hw * 0.68, hw * 0.68):
-            mslot(bm, 4, slab, hl - 0.06, hl + 0.02, sy - 0.26, sy + 0.26,
-                  z0 + 0.22, z0 + 0.42)
-            mslot(bm, 5, slab, -hl - 0.02, -hl + 0.06, sy - 0.26, sy + 0.26,
-                  z0 + 0.24, z0 + 0.44)
-        if kind == 'cab':
-            mslot(bm, 3, slab, -0.34, 0.34, -0.14, 0.14, z0 + tall + 0.56, z0 + tall + 0.74)
-            mslot(bm, 6, slab, -0.30, 0.30, -0.12, 0.12, z0 + tall + 0.60, z0 + tall + 0.72)
-    elif kind == 'van':
-        mslot(bm, body_slot, slab, -hl, hl, -hw, hw, 0.40, 2.10)
-        mslot(bm, 1, slab, hl * 0.52, hl - 0.04, -hw * 0.94, hw * 0.94, 1.30, 1.95)
-        mslot(bm, 1, slab, -hl * 0.1, hl * 0.42, -hw - 0.02, -hw * 0.96, 1.35, 1.90)
-        mslot(bm, 1, slab, -hl * 0.1, hl * 0.42, hw * 0.96, hw + 0.02, 1.35, 1.90)
-        for sx in (-hl * 0.60, hl * 0.62):
-            for sy in (-hw - 0.01, hw + 0.01):
-                wheel(bm, sx, sy, r=0.38)
-        for sy in (-hw * 0.7, hw * 0.7):
-            mslot(bm, 4, slab, hl - 0.05, hl + 0.02, sy - 0.24, sy + 0.24, 0.62, 0.86)
-            mslot(bm, 5, slab, -hl - 0.02, -hl + 0.05, sy - 0.20, sy + 0.20, 1.20, 1.60)
+    NS = 30
+    xs, rings = [], []
+    for i in range(NS):
+        u = i / (NS - 1.0)
+        xs.append(-L / 2 + u * L)
+        rings.append(rounded_section(W / 2 * _interp(sh["plan"], u),
+                                     _interp(sh["sill"], u), _interp(sh["belt"], u),
+                                     20, sh["e_top"], sh["e_bot"]))
+    body = loft(bm, xs, rings, 0)
+    if sh["roof_h"] > 0.0:
+        # a car: a separate glasshouse sitting on the shoulder line
+        cab0, cab1 = sh["cab"]
+        NG = 22
+        gxs, grings = [], []
+        for i in range(NG):
+            v = i / (NG - 1.0)
+            u = cab0 + (cab1 - cab0) * v
+            zb = _interp(sh["belt"], u) - 0.03
+            zt = zb + sh["roof_h"] * _interp(sh["gh"], v)
+            gxs.append(-L / 2 + u * L)
+            grings.append(rounded_section(W / 2 * _interp(sh["plan"], u) * _interp(sh["ghw"], v),
+                                          zb, max(zt, zb + 0.015), 18, 3.8, 5.0))
+        gh = loft(bm, gxs, grings, 1)
+        top = _interp(sh["belt"], 0.5) + sh["roof_h"] * sh["roof_frac"]
+        glass_band(bm, gh, _interp(sh["belt"], 0.5) - 0.05, top)
+    else:
+        # a van, truck or bus: glaze the part of the flank that is actually a window
+        z0, z1, u0, u1 = sh["glass"]
+        glass_band(bm, body, z0, z1, -L / 2 + u0 * L, -L / 2 + u1 * L)
+    # wheels
+    w0, w1 = sh["wheels"]
+    axles = [w0, w1]
+    if kind == 'bus':
+        axles = [w0, w0 + 0.30, w1]
     elif kind == 'truck':
-        mslot(bm, body_slot, slab, hl * 0.44, hl, -hw, hw, 0.52, 2.35)         # cab
-        mslot(bm, 1, slab, hl * 0.62, hl - 0.05, -hw * 0.94, hw * 0.94, 1.55, 2.20)
-        mslot(bm, 3, slab, -hl, hl * 0.42, -hw * 1.02, hw * 1.02, 0.92, 3.05)  # box
-        mslot(bm, 3, slab, -hl - 0.04, -hl + 0.03, -hw, hw, 1.00, 2.95)
-        for sx in (hl * 0.66, -hl * 0.30, -hl * 0.72):
-            for sy in (-hw - 0.02, hw + 0.02):
-                wheel(bm, sx, sy, r=0.48, w=0.26)
-        for sy in (-hw * 0.72, hw * 0.72):
-            mslot(bm, 4, slab, hl - 0.05, hl + 0.02, sy - 0.24, sy + 0.24, 0.72, 0.96)
-            mslot(bm, 5, slab, -hl - 0.05, -hl + 0.02, sy - 0.22, sy + 0.22, 1.05, 1.35)
-    else:                                                                      # bus
-        mslot(bm, body_slot, slab, -hl, hl, -hw, hw, 0.44, 3.05)
-        mslot(bm, 1, slab, -hl * 0.94, hl * 0.90, -hw - 0.015, -hw * 0.94, 1.70, 2.62)
-        mslot(bm, 1, slab, -hl * 0.94, hl * 0.90, hw * 0.94, hw + 0.015, 1.70, 2.62)
-        mslot(bm, 1, slab, hl - 0.05, hl + 0.015, -hw * 0.94, hw * 0.94, 1.55, 2.62)
-        mslot(bm, 3, slab, -hl, hl, -hw * 1.01, hw * 1.01, 2.98, 3.10)
-        k = -hl + 1.0
-        while k < hl - 0.6:                                                    # window pillars
-            mslot(bm, body_slot, slab, k - 0.07, k + 0.07, -hw - 0.02, hw + 0.02, 1.68, 2.64)
-            k += 1.55
-        for sx in (hl * 0.70, -hl * 0.55, -hl * 0.80):
-            for sy in (-hw - 0.01, hw + 0.01):
-                wheel(bm, sx, sy, r=0.50, w=0.24)
-        for sy in (-hw * 0.74, hw * 0.74):
-            mslot(bm, 4, slab, hl - 0.05, hl + 0.02, sy - 0.26, sy + 0.26, 0.80, 1.04)
-            mslot(bm, 5, slab, -hl - 0.02, -hl + 0.05, sy - 0.24, sy + 0.24, 1.10, 1.45)
+        axles = [w0, w0 + 0.13, w1]
+    hw = W / 2
+    for u in axles:
+        x = -L / 2 + u * L
+        ww = hw * _interp(sh["plan"], u) - sh["wheel_w"] * 0.42
+        for sy in (-ww, ww):
+            wheel(bm, x, sy, sh["wheel_r"], sh["wheel_w"])
+    # lamps, set into the nose and tail
+    for (u, slot, dz) in ((0.985, 4, 0.30), (0.015, 5, 0.34)):
+        x = -L / 2 + u * L
+        a = hw * _interp(sh["plan"], u)
+        z = _interp(sh["sill"], u) + (_interp(sh["belt"], u) - _interp(sh["sill"], u)) * dz
+        for sy in (-a * 0.66, a * 0.66):
+            mslot(bm, slot, bm_box, (x, sy, z), (0.10, a * 0.42, 0.16))
+    if kind == 'cab':
+        mslot(bm, 6, bm_box, (0.05, 0.0, _interp(sh["belt"], 0.5) + sh["roof_h"] + 0.09),
+              (0.58, 0.24, 0.17))
+    if kind in ('sedan', 'cab', 'suv'):                       # door mirrors
+        u = sh["cab"][1] - 0.02
+        x = -L / 2 + u * L
+        a = hw * _interp(sh["plan"], u)
+        for sy in (-1, 1):
+            mslot(bm, 0, bm_box, (x, sy * (a + 0.09), _interp(sh["belt"], u) + 0.06),
+                  (0.13, 0.17, 0.09))
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-4)
     mats = [MATS["car_body"], MATS["carglass"], MATS["tyre"], MATS["car_trim"],
             MATS["headlamp"], MATS["taillamp"], MATS["cabsign"]]
-    return proto(name, bm, mats, c)
+    return proto(name, bm, mats, c, smooth=40.0)
 
 
 VEHICLES = [("cab", 'cab', 4.75, 1.90, (0.62, 0.38, 0.015)),
@@ -2931,7 +3146,13 @@ def build_signage(specs, c, rng):
            ((0.55, 0.13, 0.36), (0.88, 0.85, 0.78), (0.15, 0.55, 0.62))]
     n = 0
     cands = [s for s in specs if s.get("vis") and s.get("detail") and 40.0 < s["dist"] < 420.0]
-    cands.sort(key=lambda s: s["dist"])
+
+    def rank(sp):
+        # the reference hangs its biggest, brightest boards on the blocks straight down the
+        # avenue, where they read as the focal point; prefer those, then work outwards
+        mid = 150.0 < 0.5 * (sp["y0"] + sp["y1"]) < 340.0 and abs(0.5 * (sp["x0"] + sp["x1"])) < 110.0
+        return (0 if mid else 1, sp["dist"])
+    cands.sort(key=rank)
     for spec in cands:
         if n >= 9:
             break
@@ -2945,15 +3166,17 @@ def build_signage(specs, c, rng):
         width = a1 - a0
         if width < 11.0:
             continue
-        rooftop = rng.random() < 0.45
-        w = min(width * 0.82, rng.uniform(13.0, 21.0))
-        h = w * rng.uniform(0.34, 0.48)
+        hero_board = n < 3                      # the first few are the big focal boards
+        rooftop = rng.random() < (0.30 if hero_board else 0.45)
+        w = min(width * (0.94 if hero_board else 0.82),
+                rng.uniform(19.0, 27.0) if hero_board else rng.uniform(13.0, 21.0))
+        h = w * (rng.uniform(0.52, 0.66) if hero_board else rng.uniform(0.34, 0.48))
         a_c = lerp(a0 + w / 2 + 0.4, a1 - w / 2 - 0.4, rng.random())
         z_c = (spec["h"] + 1.6 + h / 2 + 1.2) if rooftop else \
               lerp(spec["h"] * 0.55, spec["h"] - h * 0.7, rng.random())
         idx = n % len(ads)
         mat = mat_get("bill%d" % idx, mat_billboard, "Bill%d" % idx, pal[idx % len(pal)],
-                      rng.uniform(1.6, 4.0), idx % 3)
+                      rng.uniform(4.5, 8.0) if hero_board else rng.uniform(1.6, 4.0), idx % 3)
         build_billboard(c, "Billboard%d" % n, axis, sgn, plane, a_c, z_c, w, h, mat, rng,
                         words=ads[idx], rooftop=rooftop)
         n += 1
@@ -3028,7 +3251,7 @@ def build_sun(c):
         ld = bpy.data.lights.new("CC_Bounce", 'AREA')
         ld.shape = 'RECTANGLE'
         ld.size, ld.size_y = 260.0, 220.0
-        ld.energy = 55000.0
+        ld.energy = 26000.0
         ld.color = (1.0, 0.70, 0.46)
         setp(ld.cycles, "is_portal", False)
         b = link_obj("Bounce", ld, c)
@@ -3162,7 +3385,7 @@ def build_materials():
     M["roofdeck"] = mat_roofdeck("RoofDeck")
     M["asphalt"] = mat_asphalt("Asphalt")
     M["sidewalk"] = mat_sidewalk("Sidewalk")
-    M["trim"] = mat_concrete("Trim", (0.345, 0.335, 0.315), 0.68, scale=2.2)
+    M["trim"] = mat_concrete("Trim", (0.225, 0.218, 0.205), 0.72, scale=2.2)
     # metals
     M["galv"] = mat_metal("Galvanised", (0.52, 0.53, 0.545), 0.40, 1.0, 0.30, 1.6)
     M["paint_grey"] = mat_metal("PaintGrey", (0.255, 0.258, 0.262), 0.48, 0.25, 0.35, 1.2)
@@ -3518,12 +3741,14 @@ def setup_compositor():
         g.link(ex1.outputs["Image"], cb.inputs["Image"])
         lift, gamma, gain = g.i(cb, "Lift", 'RGBA'), g.i(cb, "Gamma", 'RGBA'), g.i(cb, "Gain", 'RGBA')
         if all(abs(v - 1.0) < 0.01 for v in tuple(lift.default_value)[:3]):
-            lift.default_value = (0.982, 1.000, 1.022, 1.0)    # cool, slightly blue shadows
-            gamma.default_value = (1.010, 0.998, 0.980, 1.0)   # warm mid-tones
-            gain.default_value = (1.030, 1.005, 0.960, 1.0)    # warm highlights: low sun
+            # A light touch: the contrast comes from the sun/sky ratio and the AgX look,
+            # not from crushing here, which turns the shadows to solid black.
+            lift.default_value = (1.000, 0.996, 0.990, 1.0)    # shadows lean warm, not blue
+            gamma.default_value = (1.006, 1.000, 0.992, 1.0)
+            gain.default_value = (1.018, 1.000, 0.982, 1.0)    # warm highlights: afternoon sun
         hs = g.new('CompositorNodeHueSat', 20, -150)
         g.link(cb.outputs["Image"], hs.inputs["Image"])
-        g.set(hs, {"Hue": 0.502, "Saturation": 0.90, "Value": 1.0})
+        g.set(hs, {"Hue": 0.502, "Saturation": 0.95, "Value": 1.0})
         ex2 = g.new('CompositorNodeExposure', 180, 150)
         g.link(hs.outputs["Image"], ex2.inputs["Image"])
         g.set(ex2, {"Exposure": -P["exposure"]})
