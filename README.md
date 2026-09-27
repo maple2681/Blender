@@ -126,6 +126,20 @@ Everything it makes is prefixed `CC_`.
   greenhouse and a bus gets a window strip from the same code.
 * **Trees.** A leaning trunk, two orders of limbs, and crowns built from clumps of noise-displaced
   spheres hung off the branch tips, so the silhouette breaks up instead of reading as a lollipop.
+* **People.** Several hundred pedestrians walking the pavements, both sides of the avenue and
+  along the cross street, at their own speeds and in both directions, with a fifth of them
+  standing still. One material dresses the whole crowd: each figure takes its coat colour and
+  skin tone from its own random value, so a pavement of instances is never a uniform block.
+* **Birds.** Loose flocks gliding across the canyon with their wings actually flapping - the flap
+  is keyframed once and cycled, so it costs three keys a wing - plus a dozen or so sitting on
+  the parapets with their wings folded.
+* **A street that is used.** A parked rank down both kerbs with gaps for hydrants and driveways,
+  green-decked scaffold sheds standing over the pavement, and shop awnings along the frontage.
+  From the air the parked cars and the awnings are most of what makes a street look occupied.
+* **No two buildings the same.** Beyond the varied lots and heights, every wall material shifts
+  its own hue, saturation and value off the building's random value, and masonry buildings get
+  cornices under the parapet and belt courses up the facade. Without that a procedural street
+  reads as copy-paste however well the individual building is modelled.
 * **Bevelled edges.** Every shading normal is rounded along its edges. Perfectly sharp edges are
   the single biggest giveaway that something is CG, because real ones always carry a thin
   highlight. It is done in the shader, so it costs no geometry; `bevel` in `P` is the radius and
@@ -181,6 +195,8 @@ of it.
 | `n_vehicles`, `traffic_speed`, `signal_period`, `signal_green` | the traffic and the lights |
 | `detail_radius`, `clutter_radius` | how far out real windows and full rooftop kit are built |
 | `cam_start`, `cam_travel`, `cam_rise`, `cam_pitch`, `cam_yaw`, `lens` | the camera and its move |
+| `people`, `birds`, `bird_flocks`, `birds_perched` | the crowd and the flocks |
+| `parked_cars`, `sidewalk_sheds`, `awnings` | what fills the kerb and the pavement |
 | `water_tanks`, `rooftop_crane`, `scaffolding`, `fire_escapes`, `trees`, `signage`, `traffic` | switch elements on or off |
 | `motion_blur`, `samples`, `volume_step_rate` | render cost |
 

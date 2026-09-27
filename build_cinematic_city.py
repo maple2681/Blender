@@ -103,6 +103,9 @@ P = dict(
     traffic=True, n_vehicles=180, traffic_speed=7.5,   # m/s on the green (about 27 km/h)
     signal_period=11.0, signal_green=0.62,             # s, fraction of the cycle that is green
     street_lamps=True, trees=True, signage=True,
+    # street life: an empty pavement is the fastest way to make a city look like a model
+    people=True, parked_cars=True, sidewalk_sheds=3, awnings=True,
+    birds=True, bird_flocks=4, birds_perched=14,
     # --- atmosphere --------------------------------------------------------------
     haze=True,
     haze_density=0.00018,                  # 1/m at street level: god rays between the towers
@@ -1023,6 +1026,7 @@ def city_layout():
                               clutter=vis and dist < P["clutter_radius"],
                               seed=rng.randrange(1 << 28)))
     specs.sort(key=lambda s: s["dist"])
+    OBJS["specs"] = specs
     log("layout: %d buildings (%d in frame, %d detailed)"
         % (len(specs), sum(1 for s in specs if s["vis"]), sum(1 for s in specs if s["detail"])))
     return specs
@@ -1104,6 +1108,26 @@ def edge_wear(g, strength=1.0, x=-900, y=-1000):
     return g.mrange(p, 0.42, 0.62, 0.0, strength, x=x, y=y)
 
 
+def per_object_shade(g, col, amount=0.20, hue=0.022, x=-300, y=-620):
+    """Shift a colour by the object's own random value.
+
+    Without this every building sharing a material is exactly the same shade, which is what
+    makes a procedural street read as copy-paste. Three decorrelated channels come out of a
+    white-noise node seeded by the object, so value, saturation and hue drift independently.
+    """
+    wn = g.new('ShaderNodeTexWhiteNoise', x - 420, y, noise_dimensions='1D')
+    g.feed(g.i(wn, "W"), obj_random(g, x - 600, y - 140))
+    rc, gc, bc = g.separate(g.o(wn, "Color"), x - 250, y)
+    hs = g.new('ShaderNodeHueSaturation', x, y)
+    g.feed(g.i(hs, "Color"), col)
+    g.feed(g.i(hs, "Hue"), g.mrange(rc, 0.0, 1.0, 0.5 - hue, 0.5 + hue, x=x - 130, y=y + 130))
+    g.feed(g.i(hs, "Saturation"), g.mrange(gc, 0.0, 1.0, 1.0 - amount, 1.0 + amount * 0.7,
+                                           x=x - 130, y=y))
+    g.feed(g.i(hs, "Value"), g.mrange(bc, 0.0, 1.0, 1.0 - amount, 1.0 + amount * 0.9,
+                                      x=x - 130, y=y - 130))
+    return g.o(hs, "Color")
+
+
 def bevel_n(g, radius=None, samples=4, normal=None, x=-620, y=620):
     """Round the shading normal along every edge.
 
@@ -1170,6 +1194,7 @@ def mat_brick(name="Brick", col=(0.30, 0.13, 0.085), mortar=(0.52, 0.49, 0.44),
     base = g.mix(brick, mortar, face, dtype='RGBA', x=280, y=100)
     # dirt
     d = grime(g, uv, pz, scale=1.0, x=-900, y=-700)
+    base = per_object_shade(g, base, 0.22, 0.026, x=380, y=-820)
     dirty = g.mix(g.math('MULTIPLY', d, 0.72, x=440, y=-120), base, (0.055, 0.05, 0.047),
                   dtype='RGBA', x=580, y=40)
     rough = g.mix(brick, 0.93, g.mrange(g.fac(grain), 0.0, 1.0, 0.60, 0.82, x=440, y=-300),
@@ -1212,7 +1237,8 @@ def mat_stone(name="Stone", col=(0.40, 0.375, 0.335), panel=(1.35, 0.95), joint=
     joints = g.math('SUBTRACT', 1.0, face, x=-460, y=340)
     dirt_all = g.math('ADD', g.math('MULTIPLY', d, soot, x=0, y=-420),
                       g.math('MULTIPLY', joints, 0.55 * soot, x=0, y=-500), x=160, y=-460)
-    base = g.mix(g.math('MINIMUM', dirt_all, 0.9, x=300, y=-460), g.o(bright, "Color"),
+    stone_col = per_object_shade(g, g.o(bright, "Color"), 0.17, 0.016, x=300, y=-900)
+    base = g.mix(g.math('MINIMUM', dirt_all, 0.9, x=300, y=-460), stone_col,
                  (0.048, 0.045, 0.042), dtype='RGBA', x=460, y=-200)
     rough = g.mix(g.fac(fine), 0.66, 0.86, dtype='FLOAT', x=460, y=-560)
     hgt = g.math('ADD', g.math('MULTIPLY', face, 0.8, x=300, y=200),
@@ -1240,6 +1266,7 @@ def mat_concrete(name="Concrete", col=(0.30, 0.295, 0.285), rough=0.78, scale=1.
     c = g.mix(g.math('MULTIPLY', hole_m, 0.8, x=-820, y=-300), c, (0.05, 0.048, 0.046),
               dtype='RGBA', x=-500, y=-160)
     d = grime(g, uv, pz, scale=0.7, x=-1300, y=-760)
+    c = per_object_shade(g, c, 0.18, 0.014, x=-420, y=-980)
     base = g.mix(g.math('MULTIPLY', d, 0.6, x=-340, y=-380), c, (0.06, 0.058, 0.055),
                  dtype='RGBA', x=-160, y=-180)
     rgh = g.mrange(g.fac(mott), 0.0, 1.0, rough - 0.10, rough + 0.10, x=-160, y=-420)
@@ -1908,6 +1935,13 @@ def build_facade(bm, spec, rect, z0, z1, style, rng, exposed, reveal, fh):
                 mslot(bm, SLOT_TRIM, face_box, axis, sgn, inner, a0, a1, 0.0, sill * 0.9, reveal * 1.4)
 
 
+def build_band(bm, rect, z, h, proj, slot=SLOT_TRIM, over=0.0):
+    """A moulding running right round the building: a cornice, or a belt course."""
+    for axis, sgn in SIDES:
+        plane, (a0, a1) = side_plane(rect, axis, sgn)
+        mslot(bm, slot, face_box, axis, sgn, plane, a0 - over, a1 + over, z, z + h, proj)
+
+
 def build_roof(bm, rect, z, style, rng, parapet=True):
     """Roof deck, parapet wall and its stone coping. Returns the height of the deck surface.
 
@@ -1945,8 +1979,17 @@ def build_building(spec, specs, c, rng):
         if spec["detail"]:
             mslot(bm, SLOT_WALL, slab, x0 + reveal, x1 - reveal, y0 + reveal, y1 - reveal, z0, z1)
             build_facade(bm, spec, rect, z0, z1, style, rng, exposed, reveal, fh)
-            deck = build_roof(bm, (x0 + reveal, x1 - reveal, y0 + reveal, y1 - reveal),
-                              z1, style, rng)
+            inner = (x0 + reveal, x1 - reveal, y0 + reveal, y1 - reveal)
+            if style in ('brick', 'stone') and rng.random() < 0.72:
+                cp = rng.uniform(0.28, 0.70)                 # a cornice under the parapet
+                build_band(bm, inner, z1 - rng.uniform(0.5, 0.9), rng.uniform(0.35, 0.65),
+                           -cp, over=cp)
+            if style in ('brick', 'stone') and z1 > 26.0 and rng.random() < 0.55:
+                for bz in sorted(rng.sample(range(6, max(7, int(z1 - 6))),
+                                            k=min(2, max(1, int(z1 // 26))))):
+                    build_band(bm, inner, float(bz), rng.uniform(0.18, 0.32),
+                               -rng.uniform(0.10, 0.22))
+            deck = build_roof(bm, inner, z1, style, rng)
         else:
             mslot(bm, SLOT_WALL, slab, x0, x1, y0, y1, 0.0, z1)
             mslot(bm, SLOT_ROOF, slab, x0 + 0.3, x1 - 0.3, y0 + 0.3, y1 - 0.3, z1, z1 + 0.35)
@@ -3400,6 +3443,13 @@ def build_materials():
     M["board"] = mat_plain("ScaffoldBoard", (0.215, 0.180, 0.130), 0.86, 0.0, 14.0, 0.3)
     M["bark"] = mat_plain("Bark", (0.075, 0.066, 0.055), 0.88, 0.0, 22.0, 0.55)
     M["tankwood"] = mat_tank_wood("TankWood")
+    M["cloth"] = mat_person_cloth("Cloth")
+    M["skin"] = mat_skin("Skin")
+    M["bird"] = mat_plain("Bird", (0.085, 0.086, 0.092), 0.68, 0.0, 30.0, 0.3)
+    M["shed_paint"] = mat_metal("ShedPaint", (0.045, 0.135, 0.055), 0.62, 0.10, 0.30, 1.4)
+    M["awning_a"] = mat_plain("AwningA", (0.155, 0.032, 0.030), 0.72, 0.0, 26.0, 0.25)
+    M["awning_b"] = mat_plain("AwningB", (0.030, 0.062, 0.115), 0.72, 0.0, 26.0, 0.25)
+    M["awning_c"] = mat_plain("AwningC", (0.028, 0.085, 0.052), 0.72, 0.0, 26.0, 0.25)
     M["foliage"] = mat_foliage("Foliage")
     M["carglass"] = mat_car_glass("CarGlass")
     # lamps and lenses
@@ -3837,6 +3887,311 @@ def remove_default_scene():
 
 
 # ============================================================================
+#  STREET LIFE  -  people, birds, parked cars, sheds and awnings
+# ============================================================================
+def mat_person_cloth(name="Cloth"):
+    """One material for the whole crowd: each figure takes its own colour from the
+    object's random value, so a pavement full of instances is never a uniform block."""
+    m, g, out = new_mat(name)
+    wn = g.new('ShaderNodeTexWhiteNoise', -1200, 0, noise_dimensions='1D')
+    g.feed(g.i(wn, "W"), obj_random(g, -1400, -160))
+    r = g.o(wn, "Value")
+    ramp = g.ramp(r, [(0.00, (0.020, 0.021, 0.024)), (0.22, (0.055, 0.052, 0.050)),
+                      (0.40, (0.105, 0.098, 0.088)), (0.56, (0.035, 0.052, 0.095)),
+                      (0.70, (0.150, 0.120, 0.085)), (0.82, (0.180, 0.055, 0.045)),
+                      (0.92, (0.230, 0.220, 0.200)), (1.00, (0.075, 0.090, 0.075))],
+                  x=-900, y=0)
+    bsdf = g.principled(1300, 0, base=g.o(ramp, "Color"), rough=0.78, sheen=0.25,
+                        normal=bevel_n(g, 0.004))
+    return finish(m, g, out, bsdf)
+
+
+def mat_skin(name="Skin"):
+    m, g, out = new_mat(name)
+    wn = g.new('ShaderNodeTexWhiteNoise', -1200, 0, noise_dimensions='1D')
+    g.feed(g.i(wn, "W"), g.math('ADD', obj_random(g, -1400, -160), 0.37, x=-1300, y=-80))
+    ramp = g.ramp(g.o(wn, "Value"), [(0.0, (0.160, 0.088, 0.055)), (0.45, (0.300, 0.180, 0.125)),
+                                     (1.0, (0.420, 0.290, 0.225))], x=-900, y=0)
+    bsdf = g.principled(1300, 0, base=g.o(ramp, "Color"), rough=0.62, sss=0.08,
+                        sss_radius=(0.012, 0.006, 0.004))
+    return finish(m, g, out, bsdf)
+
+
+def proto_person(c, name, tall=1.76, build=1.0, stride=0.30):
+    """A pedestrian. From 150 m up a person is about eight pixels, so what has to read is
+    the silhouette and the movement, not the anatomy."""
+    bm = bmesh.new()
+    k = build * tall / 1.76
+    hip, sh = tall * 0.50, tall * 0.82
+    for sgn, fwd in ((-1, stride), (1, -stride)):                     # legs, mid-stride
+        mslot(bm, 0, bm_tube, [(fwd * 0.95, sgn * 0.09, 0.03),
+                               (fwd * 0.45, sgn * 0.088, hip * 0.52),
+                               (0.0, sgn * 0.078, hip)], 0.056 * k, seg=6, r_end=0.075 * k)
+        mslot(bm, 0, bm_box, (fwd * 1.02, sgn * 0.09, 0.035), (0.25 * k, 0.10 * k, 0.07 * k))
+    mslot(bm, 0, bm_tube, [(0.0, 0.0, hip - 0.02), (0.0, 0.0, hip + (sh - hip) * 0.55),
+                           (0.0, 0.0, sh)], 0.145 * k, seg=9, r_end=0.150 * k)
+    for sgn, fwd in ((-1, -stride), (1, stride)):                     # arms, swinging opposite
+        mslot(bm, 0, bm_tube, [(0.0, sgn * 0.165, sh - 0.04),
+                               (fwd * 0.40, sgn * 0.195, sh - 0.30),
+                               (fwd * 0.80, sgn * 0.175, sh - 0.56)],
+              0.046 * k, seg=6, r_end=0.036 * k)
+    mslot(bm, 1, bm_cyl, (0.0, 0.0, sh + 0.05), 0.048 * k, 0.10, segs=8)
+    mslot(bm, 1, bm_sphere, (0.0, 0.0, sh + 0.165), 0.098 * k,
+          scale=(0.92, 0.86, 1.06), useg=10, vseg=8)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return proto(name, bm, [MATS["cloth"], MATS["skin"]], c, smooth=42.0)
+
+
+def build_person_protos(c):
+    out = []
+    for i, (tall, build, stride) in enumerate(((1.78, 1.00, 0.32), (1.66, 0.94, 0.26),
+                                               (1.84, 1.10, 0.36), (1.71, 1.05, 0.10),
+                                               (1.60, 0.90, 0.04), (1.75, 0.98, 0.22))):
+        out.append(proto_person(c, "person%d" % i, tall, build, stride))
+    return out
+
+
+def walk_lanes():
+    """Strips of pavement the crowd walks along: (axis, fixed coordinate, from, to)."""
+    half = P["avenue_road"] * 0.5
+    y0, y1 = P["cross_streets"][0] + 6.0, 430.0
+    out = []
+    for sx in (-1, 1):
+        for off in (2.0, 4.3, 6.0):
+            out.append(('y', P["avenue_x"] + sx * (half + off), y0, y1))
+    cy = P["cross_streets"][1]
+    hw = P["cross_road"] * 0.5
+    for sy in (-1, 1):
+        out.append(('x', cy + sy * (hw + 3.0), -150.0, 150.0))
+    return out
+
+
+def build_pedestrians(c, rng, protos):
+    """Fill the pavements. Walkers get keyframed along their lane; some stand in clusters."""
+    if not P["people"]:
+        return 0
+    fs, fe = P["frame_start"], P["frame_end"]
+    dur = (fe - fs) / float(P["fps"])
+    lanes = walk_lanes()
+    n = 0
+    for (axis, fixed, a0, a1) in lanes:
+        span = a1 - a0
+        count = max(2, int(span / rng.uniform(7.0, 11.0)))
+        for _ in range(count):
+            src = rng.choice(protos)
+            start = rng.uniform(a0, a1)
+            d = 1 if rng.random() < 0.5 else -1
+            standing = rng.random() < 0.22
+            spd = 0.0 if standing else rng.uniform(1.05, 1.65) * d
+            jit = rng.uniform(-1.1, 1.1)
+            rot = (0.0 if d > 0 else pi) if axis == 'y' else (radians(90.0) if d > 0 else radians(-90.0))
+            if axis == 'y':
+                loc0 = (fixed + jit, start, 0.156)
+            else:
+                loc0 = (start, fixed + jit, 0.156)
+            ob = place(src, c, loc0, rot + rng.uniform(-0.25, 0.25), rng.uniform(0.94, 1.06),
+                       name="ped%04d" % n)
+            if not standing:
+                for f in range(fs, fe + 1, 8):
+                    t = (f - fs) / float(P["fps"])
+                    u = start + spd * t
+                    u = a0 + (u - a0) % span                  # wrap along the block
+                    ob.location = (fixed + jit, u, 0.156) if axis == 'y' else (u, fixed + jit, 0.156)
+                    ob.keyframe_insert("location", frame=f)
+                ad = ob.animation_data
+                if ad and ad.action:
+                    for fc in _fcurves(ad.action):
+                        for kp in fc.keyframe_points:
+                            kp.interpolation = 'LINEAR'
+            n += 1
+    log("pedestrians: %d (%.0f s of walk)" % (n, dur))
+    return n
+
+
+def proto_bird(c):
+    """A pigeon: a body and two wings that flap, kept as separate objects so the flap can
+    be keyframed once and cycled."""
+    bm = bmesh.new()
+    mslot(bm, 0, bm_sphere, (0.0, 0.0, 0.0), 0.075, scale=(1.9, 0.85, 0.85), useg=10, vseg=7)
+    mslot(bm, 0, bm_sphere, (0.10, 0.0, 0.022), 0.042, scale=(1.0, 0.9, 0.9), useg=8, vseg=6)
+    mslot(bm, 0, bm_box, (-0.165, 0.0, 0.012), (0.13, 0.085, 0.012), (0, radians(-7), 0))
+    body = proto("bird_body", bm, [MATS["bird"]], c, smooth=44.0)
+    bw = bmesh.new()
+    pts = [(0.03, 0.0, 0.0), (0.02, 0.10, 0.012), (-0.01, 0.20, 0.016), (-0.06, 0.29, 0.010)]
+    mslot(bw, 0, bm_tube, pts, 0.030, seg=5, r_end=0.009)
+    for (px, py, w, l) in ((0.00, 0.075, 0.105, 0.075), (-0.025, 0.175, 0.090, 0.065),
+                           (-0.050, 0.255, 0.070, 0.045)):
+        mslot(bw, 0, bm_box, (px, py, 0.006), (w * 1.7, l * 2.1, 0.008))
+    wing = proto("bird_wing", bw, [MATS["bird"]], c, smooth=50.0)
+    return body, wing
+
+
+def build_birds(c, rng, body_src, wing_src):
+    """Loose flocks crossing the canyon, plus a few sitting on the parapets."""
+    if not P["birds"]:
+        return 0
+    fs, fe = P["frame_start"], P["frame_end"]
+    n = 0
+    for flock in range(P["bird_flocks"]):
+        cx = rng.uniform(-70.0, 90.0)
+        cy = rng.uniform(40.0, 300.0)
+        cz = rng.uniform(46.0, 118.0)
+        head = rng.uniform(0.0, 2.0 * pi)
+        spd = rng.uniform(7.0, 12.0)
+        for _ in range(rng.randint(5, 11)):
+            ox, oy, oz = (rng.uniform(-9, 9), rng.uniform(-9, 9), rng.uniform(-4.5, 4.5))
+            b = place(body_src, c, (cx + ox, cy + oy, cz + oz), head, rng.uniform(0.8, 1.25),
+                      name="bird%03d" % n)
+            for sgn in (-1, 1):
+                w = wing_src.copy()
+                w.data = wing_src.data
+                w.name = "CC_birdwing%03d%s" % (n, "L" if sgn < 0 else "R")
+                w.hide_render = False
+                w.hide_viewport = False
+                w.parent = b
+                w.scale = (1.0, float(sgn), 1.0)
+                c.objects.link(w)
+                ph = rng.uniform(0.0, 6.0)
+                for i, (fo, ang) in enumerate(((0, 0.85), (3, -0.35), (6, 0.85))):
+                    w.rotation_euler = (ang * sgn, 0.0, 0.0)
+                    w.keyframe_insert("rotation_euler", frame=fs + fo + int(ph))
+                fcu = _find_fcurve(w, "rotation_euler", 0)
+                if fcu is not None:
+                    fcu.modifiers.new('CYCLES')               # flap for the whole shot
+            # a long, gently curving glide across the frame
+            for f in (fs, (fs + fe) // 2, fe):
+                t = (f - fs) / float(P["fps"])
+                drift = 0.30 * t * t
+                b.location = (cx + ox + cos(head) * spd * t - sin(head) * drift,
+                              cy + oy + sin(head) * spd * t + cos(head) * drift,
+                              cz + oz + 1.1 * t * rng.uniform(-0.5, 0.9))
+                b.rotation_euler = (0.0, 0.0, head + 0.06 * t)
+                b.keyframe_insert("location", frame=f)
+                b.keyframe_insert("rotation_euler", frame=f)
+            n += 1
+    for _ in range(P["birds_perched"]):                        # sitting on the parapets
+        spec = rng.choice([sp for sp in OBJS.get("specs", []) if sp.get("clutter")] or [None])
+        if spec is None or not spec.get("roofs"):
+            continue
+        rect, deck, _ = spec["roofs"][-1]
+        side = rng.random() < 0.5
+        x = rng.uniform(rect[0], rect[1]) if side else rng.choice([rect[0], rect[1]])
+        y = rng.choice([rect[2], rect[3]]) if side else rng.uniform(rect[2], rect[3])
+        b = place(body_src, c, (x, y, deck + 1.05), rng.uniform(0, 2 * pi),
+                  rng.uniform(0.85, 1.15), name="birdsit%03d" % n)
+        for sgn in (-1, 1):
+            w = wing_src.copy()
+            w.data = wing_src.data
+            w.name = "CC_birdsitw%03d%s" % (n, "L" if sgn < 0 else "R")
+            w.hide_render = False
+            w.hide_viewport = False
+            w.parent = b
+            w.scale = (1.0, float(sgn), 1.0)
+            w.rotation_euler = (1.35 * sgn, 0.0, 0.0)          # folded
+            c.objects.link(w)
+        n += 1
+    log("birds: %d" % n)
+    return n
+
+
+def build_parked_cars(c, rng, protos):
+    """A parked rank down both kerbs. From the air this is most of what fills a street."""
+    if not P["parked_cars"]:
+        return 0
+    half = P["avenue_road"] * 0.5
+    kinds = ["sedan_w", "sedan_k", "sedan_r", "sedan_b", "suv", "van", "cab", "cab2"]
+    n = 0
+    for sx in (-1, 1):
+        x = P["avenue_x"] + sx * (half - 1.15)
+        y = P["cross_streets"][0] + 12.0
+        while y < 430.0:
+            if rng.random() < 0.72:
+                k = rng.choice(kinds)
+                rot = (radians(90.0) if sx > 0 else radians(-90.0)) + rng.uniform(-0.03, 0.03)
+                place(protos[k], c, (x + rng.uniform(-0.18, 0.18), y, 0.0), rot,
+                      name="parked%03d" % n)
+                n += 1
+                y += rng.uniform(5.6, 7.4)
+            else:
+                y += rng.uniform(7.0, 16.0)                    # a gap: a hydrant or a driveway
+    log("parked cars: %d" % n)
+    return n
+
+
+def build_sidewalk_sheds(c, rng):
+    """The green-decked scaffold tunnels that stand over half the pavements in New York."""
+    if not P["sidewalk_sheds"]:
+        return 0
+    half = P["avenue_road"] * 0.5
+    n = 0
+    for _ in range(P["sidewalk_sheds"]):
+        sx = rng.choice((-1, 1))
+        y0 = rng.uniform(P["cross_streets"][0] + 20.0, 330.0)
+        L = rng.uniform(22.0, 46.0)
+        x_in = P["avenue_x"] + sx * (half + 0.6)
+        x_out = P["avenue_x"] + sx * (half + P["sidewalk"] - 0.4)
+        h = 4.3
+        bm = bmesh.new()
+        mslot(bm, 1, slab, min(x_in, x_out), max(x_in, x_out), y0, y0 + L, h, h + 0.16)
+        mslot(bm, 2, slab, min(x_in, x_out) - 0.12, max(x_in, x_out) + 0.12,
+              y0 - 0.1, y0 + L + 0.1, h + 0.16, h + 1.05)      # plywood parapet
+        yy = y0
+        while yy <= y0 + L + 0.01:
+            for xx in (x_in, x_out):
+                mslot(bm, 0, bm_cyl, (xx, yy, h * 0.5), 0.075, h, segs=8)
+            mslot(bm, 0, obox, (x_in, yy, h - 0.12), (x_out, yy, h - 0.12), (0, 0, 1), 0.07, 0.07)
+            yy += rng.uniform(3.0, 4.2)
+        for xx in (x_in, x_out):
+            mslot(bm, 0, obox, (xx, y0, h - 0.12), (xx, y0 + L, h - 0.12), (0, 0, 1), 0.06, 0.06)
+        bm_to_obj("Shed%02d" % n, bm, c,
+                  [MATS["galv"], MATS["board"], MATS["shed_paint"]], smooth=36.0)
+        n += 1
+    log("sidewalk sheds: %d" % n)
+    return n
+
+
+def build_awnings(specs, c, rng):
+    """Shop awnings along the avenue frontage: small, but they put colour on the kerb line."""
+    if not P["awnings"]:
+        return 0
+    half = P["avenue_road"] * 0.5
+    line_e = P["avenue_x"] + half + P["sidewalk"]
+    line_w = P["avenue_x"] - half - P["sidewalk"]
+    bm = bmesh.new()
+    n = 0
+    for spec in specs:
+        if not spec.get("vis"):
+            continue
+        for (plane, sgn) in ((line_e, -1), (line_w, 1)):
+            near = abs(spec["x0"] - plane) < 2.5 if sgn < 0 else abs(spec["x1"] - plane) < 2.5
+            if not near:
+                continue
+            y = spec["y0"] + 1.5
+            while y < spec["y1"] - 2.5:
+                if rng.random() < 0.55:
+                    w = rng.uniform(2.6, 4.6)
+                    proj = rng.uniform(1.4, 2.1)
+                    z = rng.uniform(3.0, 3.9)
+                    slot = rng.randrange(3)
+                    mslot(bm, slot, bm_box,
+                          (plane - sgn * proj * 0.5, y + w * 0.5, z + 0.16),
+                          (proj, w, 0.10), (0, radians(13.0) * (-sgn), 0))
+                    mslot(bm, 3, bm_box, (plane - sgn * proj, y + w * 0.5, z - 0.10),
+                          (0.07, w, 0.34))
+                    n += 1
+                    y += w + rng.uniform(0.4, 2.2)
+                else:
+                    y += rng.uniform(3.0, 7.0)
+    if n == 0:
+        bm.free()
+        return 0
+    bm_to_obj("Awnings", bm, c, [MATS["awning_a"], MATS["awning_b"], MATS["awning_c"],
+                                 MATS["paint_dark"]], smooth=36.0)
+    log("awnings: %d" % n)
+    return n
+
+
+# ============================================================================
 #  BUILD
 # ============================================================================
 def build_all(save_path=None):
@@ -3856,7 +4211,20 @@ def build_all(save_path=None):
 
     def step_traffic():
         protos = build_vehicle_protos(coll("90_Prototypes"))
+        state["cars"] = protos
         build_traffic(coll("21_Traffic"), random.Random(P["seed"] + 31), protos)
+        build_parked_cars(coll("22_Parked"), random.Random(P["seed"] + 32), protos)
+
+    def step_life():
+        cp = coll("90_Prototypes")
+        people = build_person_protos(cp)
+        build_pedestrians(coll("23_People"), random.Random(P["seed"] + 61), people)
+        body, wing = proto_bird(cp)
+        OBJS["specs"] = state.get("specs", [])
+        build_birds(coll("24_Birds"), random.Random(P["seed"] + 62), body, wing)
+        build_sidewalk_sheds(coll("25_Sheds"), random.Random(P["seed"] + 63))
+        build_awnings(state.get("specs", []), coll("26_Awnings"),
+                      random.Random(P["seed"] + 64))
 
     def step_signs():
         build_signage(state.get("specs", []), coll("30_Signage"),
@@ -3869,7 +4237,7 @@ def build_all(save_path=None):
 
     steps = [("render", setup_render), ("materials", build_materials), ("world", setup_world),
              ("camera", build_camera), ("city", step_city), ("street", step_street),
-             ("traffic", step_traffic), ("signage", step_signs),
+             ("traffic", step_traffic), ("street life", step_life), ("signage", step_signs),
              ("sun", lambda: build_sun(coll("00_Camera"))), ("air", step_air),
              ("compositor", setup_compositor), ("edit scene", setup_edit_scene),
              ("viewport", setup_viewport)]
