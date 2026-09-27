@@ -61,7 +61,9 @@ To make it cheaper:
 * Set **Max Samples** to 192 — with denoising it is very hard to tell apart.
 * Raise `volume_step_rate` to 2 or 3. The haze is a smooth gradient, so this costs almost nothing
   visually and is the single biggest saving.
-* Turn `motion_blur` off if you do not mind the traffic strobing a little at 24 fps.
+* Turn `motion_blur` off if you do not mind the traffic strobing a little at 24 fps. This is a
+  bigger saving than it looks: blur makes Cycles re-evaluate all 5,000 objects at every shutter
+  step, and on the cloud CPU it cost more than the sampling did.
 * For a quick look first, set `quality="PREVIEW"` in the script and rebuild: 50 % size, 48 samples.
 * Drop `detail_radius` and `clutter_radius` to build real window geometry and rooftop kit over a
   smaller area.
