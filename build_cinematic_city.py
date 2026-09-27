@@ -3595,9 +3595,20 @@ def setup_viewport():
 
 
 def remove_default_scene():
-    for s in list(bpy.data.scenes):
-        if s.name == "Scene" and len(s.objects) == 0 and s is not SC:
-            bpy.data.scenes.remove(s)
+    """Drop Blender's startup scene and its cube, lamp and camera, so the file opens clean."""
+    stock = {"Cube", "Light", "Camera"}
+    for sc in list(bpy.data.scenes):
+        if sc is SC or sc.name != "Scene":
+            continue
+        if any(not (o.name in stock) for o in sc.objects):
+            continue                       # someone put real work in here: leave it alone
+        for ob in list(sc.objects):
+            bpy.data.objects.remove(ob, do_unlink=True)
+        bpy.data.scenes.remove(sc)
+    for store in (bpy.data.meshes, bpy.data.lights, bpy.data.cameras):
+        for d in list(store):
+            if d.users == 0 and not d.name.startswith("CC_"):
+                store.remove(d)
 
 
 # ============================================================================
